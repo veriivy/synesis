@@ -166,15 +166,19 @@ async def client():
 
 async def _create_room_with_tasks(
     client: AsyncClient, *, priority_u1: str, priority_u2: str
-) -> str:
+) -> tuple[str, dict[str, str]]:
+    """Returns (room_id, {user_id: participant_token}) — the token from
+    each join, required on every subsequent call made as that user_id."""
     room_id = (await client.post("/rooms")).json()["room_id"]
 
+    tokens: dict[str, str] = {}
     for user_id in ("u1", "u2"):
         r = await client.post(
             f"/rooms/{room_id}/participants",
             json={"user_id": user_id, "display_name": user_id, "provider": "claude", "model": "m"},
         )
         assert r.status_code == 201, r.text
+        tokens[user_id] = r.json()["participant_token"]
 
     for user_id, text, priority in (
         ("u1", TASK_TEXT_U1, priority_u1),
@@ -182,11 +186,15 @@ async def _create_room_with_tasks(
     ):
         r = await client.post(
             f"/rooms/{room_id}/tasks",
-            json={"user_id": user_id, "tasks": [{"text": text, "priority": priority}]},
+            json={
+                "user_id": user_id,
+                "tasks": [{"text": text, "priority": priority}],
+                "participant_token": tokens[user_id],
+            },
         )
         assert r.status_code == 200, r.text
 
-    return room_id
+    return room_id, tokens
 
 
 def _assert_parallel_tickets_disjoint(tickets: list[dict]) -> None:
@@ -201,7 +209,7 @@ def _assert_parallel_tickets_disjoint(tickets: list[dict]) -> None:
 
 @pytest.mark.asyncio
 async def test_full_room_lifecycle_want_concedes_to_must(client: AsyncClient):
-    room_id = await _create_room_with_tasks(client, priority_u1="must", priority_u2="want")
+    room_id, tokens = await _create_room_with_tasks(client, priority_u1="must", priority_u2="want")
 
     r = await client.post(f"/rooms/{room_id}/negotiate")
     assert r.status_code == 202, r.text
@@ -218,11 +226,17 @@ async def test_full_room_lifecycle_want_concedes_to_must(client: AsyncClient):
     assert room.plan.status == "proposed"
     assert set(room.plan.approvals.keys()) == {"u1", "u2"}
 
-    r1 = await client.post(f"/rooms/{room_id}/plan/approve", json={"user_id": "u1", "approved": True})
+    r1 = await client.post(
+        f"/rooms/{room_id}/plan/approve",
+        json={"user_id": "u1", "approved": True, "participant_token": tokens["u1"]},
+    )
     assert r1.status_code == 200
     assert room.plan.status == "proposed", "still needs u2's approval"
 
-    r2 = await client.post(f"/rooms/{room_id}/plan/approve", json={"user_id": "u2", "approved": True})
+    r2 = await client.post(
+        f"/rooms/{room_id}/plan/approve",
+        json={"user_id": "u2", "approved": True, "participant_token": tokens["u2"]},
+    )
     assert r2.status_code == 200
     assert room.plan.status == "approved"
     assert room.tickets, "expected at least one ticket"
@@ -245,7 +259,7 @@ async def test_full_room_lifecycle_want_concedes_to_must(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_must_vs_must_deadlocks_then_ticketing_serializes_it(client: AsyncClient):
-    room_id = await _create_room_with_tasks(client, priority_u1="must", priority_u2="must")
+    room_id, tokens = await _create_room_with_tasks(client, priority_u1="must", priority_u2="must")
 
     await client.post(f"/rooms/{room_id}/negotiate")
     room = main_module.rooms.get(room_id)
@@ -253,8 +267,14 @@ async def test_must_vs_must_deadlocks_then_ticketing_serializes_it(client: Async
 
     assert room.plan.resolutions, "expected a resolution recorded for the unresolved collision"
 
-    await client.post(f"/rooms/{room_id}/plan/approve", json={"user_id": "u1", "approved": True})
-    await client.post(f"/rooms/{room_id}/plan/approve", json={"user_id": "u2", "approved": True})
+    await client.post(
+        f"/rooms/{room_id}/plan/approve",
+        json={"user_id": "u1", "approved": True, "participant_token": tokens["u1"]},
+    )
+    await client.post(
+        f"/rooms/{room_id}/plan/approve",
+        json={"user_id": "u2", "approved": True, "participant_token": tokens["u2"]},
+    )
     assert len(room.tickets) == 2
 
     tickets = [t.model_dump() for t in room.tickets]
@@ -301,14 +321,20 @@ async def test_execute_rejects_before_approval(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_negotiate_with_tasks_but_not_two_participants_rejects(client: AsyncClient):
     room_id = (await client.post("/rooms")).json()["room_id"]
-    await client.post(
+    join = await client.post(
         f"/rooms/{room_id}/participants",
         json={"user_id": "u1", "display_name": "u1", "provider": "claude", "model": "m"},
     )
-    await client.post(
+    token = join.json()["participant_token"]
+    r = await client.post(
         f"/rooms/{room_id}/tasks",
-        json={"user_id": "u1", "tasks": [{"text": "x", "priority": "must"}]},
+        json={
+            "user_id": "u1",
+            "tasks": [{"text": "x", "priority": "must"}],
+            "participant_token": token,
+        },
     )
+    assert r.status_code == 200, r.text
     r = await client.post(f"/rooms/{room_id}/negotiate")
     assert r.status_code == 409
 

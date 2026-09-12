@@ -45,6 +45,13 @@ class Room:
 
     # Task intake: POST /participants, /context, /tasks.
     participants: dict[str, Participant] = field(default_factory=dict)
+    # user_id -> a token issued the first time that user_id joins
+    # (main.py's add_participant), required on subsequent /participants,
+    # /tasks, /messages, /plan/approve calls for that user_id — see
+    # main._check_owner. Never included in room_snapshot (only
+    # `participants`/`tasks_by_user`/etc. are serialized below), same
+    # reasoning as api_key: this is a secret, not room state to persist.
+    participant_tokens: dict[str, str] = field(default_factory=dict, repr=False)
     project_context: str = ""
     context_version: int = 0
     tasks_by_user: dict[str, list[Task]] = field(default_factory=dict)

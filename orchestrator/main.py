@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -103,6 +104,28 @@ def _get_room(room_id: str) -> Room:
     return room
 
 
+def _check_owner(room: Room, user_id: str, token: str | None) -> None:
+    """Security fix: POST /participants, /tasks, /messages, and
+    /plan/approve used to trust a client-supplied user_id outright, so
+    anyone who knew a room_id could re-register an existing participant
+    (overwriting their provider/api_key — a real hijack once BYO keys are
+    wired into real outbound calls), rewrite their task list, or post
+    messages/approvals under their name.
+
+    A token is issued the first time a user_id joins (add_participant) and
+    must be presented on every subsequent call that acts as that user_id.
+    Before a user_id has ever joined, there's nothing to protect yet, so
+    calls for an as-yet-unclaimed user_id pass through unchecked — this
+    keeps the fixture-fallback demo path (which never calls /participants
+    at all) working exactly as before.
+    """
+    expected = room.participant_tokens.get(user_id)
+    if expected is None:
+        return
+    if not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(403, f"invalid or missing participant_token for {user_id!r}")
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -127,11 +150,19 @@ class ParticipantIn(BaseModel):
     provider: ProviderName
     model: str
     api_key: str | None = None
+    # Required to re-register an already-claimed user_id (proves you're
+    # the one who joined it, not someone guessing/sharing the room_id).
+    # Omit on first join — the response hands back the token to use from
+    # then on.
+    participant_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/participants", status_code=201)
 async def add_participant(room_id: str, body: ParticipantIn) -> dict:
     room = _get_room(room_id)
+    _check_owner(room, body.user_id, body.participant_token)
+    token = room.participant_tokens.setdefault(body.user_id, secrets.token_urlsafe(32))
+
     room.participants[body.user_id] = Participant(
         user_id=body.user_id,
         display_name=body.display_name,
@@ -149,7 +180,7 @@ async def add_participant(room_id: str, body: ParticipantIn) -> dict:
             "ts": utc_now(),
         },
     )
-    return {"ok": True}
+    return {"ok": True, "participant_token": token}
 
 
 class ContextIn(BaseModel):
@@ -176,11 +207,13 @@ async def set_context(room_id: str, body: ContextIn) -> dict:
 class TasksIn(BaseModel):
     user_id: str
     tasks: list[Task]
+    participant_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/tasks")
 async def set_tasks(room_id: str, body: TasksIn) -> dict:
     room = _get_room(room_id)
+    _check_owner(room, body.user_id, body.participant_token)
     room.tasks_by_user[body.user_id] = body.tasks
     return {"ok": True}
 
@@ -188,11 +221,13 @@ async def set_tasks(room_id: str, body: TasksIn) -> dict:
 class MessageIn(BaseModel):
     user_id: str
     content: str
+    participant_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/messages")
 async def post_message(room_id: str, body: MessageIn) -> dict:
     room = _get_room(room_id)
+    _check_owner(room, body.user_id, body.participant_token)
     room.pending_messages.append(body.content)
     await bus.publish(
         room_id,
@@ -236,6 +271,7 @@ class ApprovalIn(BaseModel):
     user_id: str
     approved: bool
     notes: str | None = None
+    participant_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/plan/approve")
@@ -243,6 +279,7 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
     room = _get_room(room_id)
     if room.plan is None:
         raise HTTPException(409, "no plan proposed yet")
+    _check_owner(room, body.user_id, body.participant_token)
 
     room.plan.approvals[body.user_id] = body.approved
     await bus.publish(
