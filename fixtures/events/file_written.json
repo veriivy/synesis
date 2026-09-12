@@ -1,0 +1,10 @@
+{
+  "type": "file_written",
+  "room_id": "room_demo01",
+  "ticket_id": "t1",
+  "agent_id": "a1",
+  "path": "src/auth/session.py",
+  "accepted": true,
+  "reason": null,
+  "ts": "2026-09-12T03:03:08.000Z"
+}

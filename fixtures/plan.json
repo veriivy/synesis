@@ -1,0 +1,57 @@
+{
+  "plan_id": "plan_demo01",
+  "rounds_used": 2,
+  "summary": "Support both session-cookie and bearer-JWT clients behind one authenticate_user. Cookie path for the browser (u1); JWT path for mobile (u2). Same local user store, no external IdP.",
+  "steps": [
+    {
+      "step_id": "s1",
+      "title": "Session cookie helpers",
+      "description": "Signed HttpOnly session cookie mapped to user_id in process memory.",
+      "files_touched": ["src/auth/session.py"],
+      "rationale": "Honors u1 must: no external IdP, cookies for the browser."
+    },
+    {
+      "step_id": "s2",
+      "title": "JWT issue and verify",
+      "description": "HS256 access tokens, 15-minute exp, sub=user_id.",
+      "files_touched": ["src/auth/jwt.py"],
+      "rationale": "Honors u2 must: bearer JWT with 15-minute expiry."
+    },
+    {
+      "step_id": "s3",
+      "title": "authenticate_user dispatcher",
+      "description": "def authenticate_user(request) -> User | None. Try session cookie, then Authorization: Bearer. Return None if both fail.",
+      "files_touched": ["src/auth/middleware.py"],
+      "rationale": "Resolution of d1 and d2: one interface, two mechanisms, one owner."
+    },
+    {
+      "step_id": "s4",
+      "title": "Login routes for both clients",
+      "description": "POST /login sets the session cookie AND returns {access_token, token_type, expires_in}. POST /logout clears the cookie. /health stays open.",
+      "files_touched": ["src/app.py", "tests/test_auth.py"],
+      "rationale": "Resolution of d3: both response shapes, one endpoint."
+    }
+  ],
+  "resolutions": [
+    {
+      "issue_id": "d1",
+      "outcome": "Both mechanisms ship. authenticate_user accepts a session cookie or a Bearer JWT.",
+      "rationale": "Each side's must-have is a client constraint, not a single-server constraint. Neither must was conceded."
+    },
+    {
+      "issue_id": "d2",
+      "outcome": "a1 writes src/auth/middleware.py. a2 does not touch it. jwt.py exports verify_access_token for the dispatcher to call.",
+      "rationale": "Same path cannot be owned by two parallel tickets."
+    },
+    {
+      "issue_id": "d3",
+      "outcome": "POST /login does both: Set-Cookie and a JSON token body.",
+      "rationale": "Minor; cheaper to satisfy both than to pick."
+    }
+  ],
+  "approvals": {
+    "u1": true,
+    "u2": true
+  },
+  "status": "approved"
+}

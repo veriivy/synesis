@@ -1,0 +1,41 @@
+{
+  "room_id": "room_demo01",
+  "tasks_by_user": [
+    {
+      "user_id": "u1",
+      "display_name": "Avery",
+      "tasks": [
+        {
+          "text": "No external identity services. Auth must work fully offline against the existing user store.",
+          "priority": "must"
+        },
+        {
+          "text": "Prefer session cookies over tokens in URLs or localStorage.",
+          "priority": "must"
+        },
+        {
+          "text": "Keep the public /health route unauthenticated.",
+          "priority": "want"
+        }
+      ]
+    },
+    {
+      "user_id": "u2",
+      "display_name": "Blair",
+      "tasks": [
+        {
+          "text": "Clients include a mobile app that cannot rely on browser cookies. Use bearer JWT.",
+          "priority": "must"
+        },
+        {
+          "text": "Access tokens should expire in 15 minutes.",
+          "priority": "must"
+        },
+        {
+          "text": "Expose POST /login that returns the token in JSON.",
+          "priority": "want"
+        }
+      ]
+    }
+  ]
+}

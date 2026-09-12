@@ -1,0 +1,7 @@
+{
+  "type": "context_updated",
+  "room_id": "room_demo01",
+  "version": 2,
+  "content": "Decided: authenticate_user accepts a session cookie or a Bearer JWT. a1 owns session.py and middleware.py. a2 owns jwt.py, app.py, tests/test_auth.py. No external IdP.",
+  "ts": "2026-09-12T03:02:21.000Z"
+}

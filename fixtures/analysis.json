@@ -1,0 +1,47 @@
+{
+  "round": 1,
+  "similarities": [
+    {
+      "topic": "authenticate_user as the gate",
+      "detail": "Both plans introduce authenticate_user(...) -> User | None and use it from protected routes. /health stays public."
+    },
+    {
+      "topic": "Local user store, no cloud IdP",
+      "detail": "Both verify credentials against src/users.py and sign with a local secret rather than an external identity service."
+    },
+    {
+      "topic": "Login route on src/app.py",
+      "detail": "Both add POST /login and tests in tests/test_auth.py."
+    }
+  ],
+  "differences": [
+    {
+      "issue_id": "d1",
+      "topic": "Session cookies vs bearer JWT",
+      "positions": {
+        "a1": "HttpOnly session cookie; authenticate_user reads the cookie. Mobile without cookies is out of scope (u1 must).",
+        "a2": "Authorization: Bearer JWT; POST /login returns JSON. Cookies cannot be required (u2 must)."
+      },
+      "severity": "blocking"
+    },
+    {
+      "issue_id": "d2",
+      "topic": "Who owns src/auth/middleware.py",
+      "positions": {
+        "a1": "Write cookie-based authenticate_user into src/auth/middleware.py.",
+        "a2": "Write header-based authenticate_user into the same file."
+      },
+      "severity": "blocking"
+    },
+    {
+      "issue_id": "d3",
+      "topic": "Login response shape",
+      "positions": {
+        "a1": "204 + Set-Cookie, empty body.",
+        "a2": "{\"access_token\", \"token_type\", \"expires_in\": 900}."
+      },
+      "severity": "minor"
+    }
+  ],
+  "converged": false
+}

@@ -1,0 +1,33 @@
+{
+  "poa_id": "poa_a1",
+  "agent_id": "a1",
+  "user_id": "u1",
+  "summary": "Add cookie-based sessions on top of the existing in-memory user store. No JWT, no external IdP. Login sets an HttpOnly session cookie; authenticate_user reads that cookie.",
+  "steps": [
+    {
+      "step_id": "s1",
+      "title": "Session store and cookie helpers",
+      "description": "Add a signed session id in an HttpOnly cookie, mapped to user_id in process memory. Sign with a local secret from env, not a cloud KMS.",
+      "files_touched": ["src/auth/session.py"],
+      "rationale": "u1 must: no external identity services; prefer session cookies."
+    },
+    {
+      "step_id": "s2",
+      "title": "authenticate_user from the session cookie",
+      "description": "def authenticate_user(request) -> User | None. Reads the cookie, looks up the session, returns the user or None. No Authorization header.",
+      "files_touched": ["src/auth/middleware.py"],
+      "rationale": "This is the interface /me and other protected routes will call."
+    },
+    {
+      "step_id": "s3",
+      "title": "POST /login and /logout using cookies",
+      "description": "login checks src/users.py, sets the session cookie, returns 204. logout clears it. /health stays open.",
+      "files_touched": ["src/app.py", "tests/test_auth.py"],
+      "rationale": "u1 want: keep /health public. Cookie on the response, not a token body."
+    }
+  ],
+  "assumptions": [
+    "A single-process server is enough for the demo; sessions do not need Redis.",
+    "Mobile clients are out of scope for u1's must-haves."
+  ]
+}

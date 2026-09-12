@@ -1,0 +1,8 @@
+{
+  "type": "participant_joined",
+  "room_id": "room_demo01",
+  "user_id": "u1",
+  "provider": "claude",
+  "model": "claude-opus-5",
+  "ts": "2026-09-12T03:00:01.000Z"
+}

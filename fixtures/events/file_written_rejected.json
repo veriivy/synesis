@@ -1,0 +1,10 @@
+{
+  "type": "file_written",
+  "room_id": "room_demo01",
+  "ticket_id": "t2",
+  "agent_id": "a2",
+  "path": "src/auth/middleware.py",
+  "accepted": false,
+  "reason": "path_not_owned: src/auth/middleware.py belongs to ticket t3 (owner a1). Agent a2 owns: src/auth/jwt.py.",
+  "ts": "2026-09-12T03:03:12.000Z"
+}

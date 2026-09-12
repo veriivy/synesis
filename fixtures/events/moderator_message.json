@@ -1,0 +1,7 @@
+{
+  "type": "moderator_message",
+  "room_id": "room_demo01",
+  "round": 1,
+  "content": "d1 is two musts, not a preference fight. Probe: can authenticate_user accept both a session cookie and a Bearer token without either user dropping a must? d2: name a single owner for src/auth/middleware.py before the next round.",
+  "ts": "2026-09-12T03:00:40.000Z"
+}

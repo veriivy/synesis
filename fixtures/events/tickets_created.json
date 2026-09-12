@@ -1,0 +1,40 @@
+{
+  "type": "tickets_created",
+  "room_id": "room_demo01",
+  "tickets": [
+    {
+      "ticket_id": "t1",
+      "plan_id": "plan_demo01",
+      "title": "Session cookie helpers",
+      "description": "create_session / load_session / clear_session.",
+      "assigned_agent": "a1",
+      "files_owned": ["src/auth/session.py"],
+      "depends_on": [],
+      "lane": "parallel",
+      "status": "pending"
+    },
+    {
+      "ticket_id": "t2",
+      "plan_id": "plan_demo01",
+      "title": "JWT issue and verify",
+      "description": "issue_access_token / verify_access_token.",
+      "assigned_agent": "a2",
+      "files_owned": ["src/auth/jwt.py"],
+      "depends_on": [],
+      "lane": "parallel",
+      "status": "pending"
+    },
+    {
+      "ticket_id": "t3",
+      "plan_id": "plan_demo01",
+      "title": "authenticate_user dispatcher",
+      "description": "Cookie first, then Bearer.",
+      "assigned_agent": "a1",
+      "files_owned": ["src/auth/middleware.py"],
+      "depends_on": ["t1", "t2"],
+      "lane": "sequential",
+      "status": "pending"
+    }
+  ],
+  "ts": "2026-09-12T03:02:25.000Z"
+}

@@ -1,0 +1,7 @@
+{
+  "type": "ticket_started",
+  "room_id": "room_demo01",
+  "ticket_id": "t1",
+  "agent_id": "a1",
+  "ts": "2026-09-12T03:03:00.000Z"
+}

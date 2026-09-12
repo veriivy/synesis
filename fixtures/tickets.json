@@ -1,0 +1,49 @@
+{
+  "plan_id": "plan_demo01",
+  "tickets": [
+    {
+      "ticket_id": "t1",
+      "plan_id": "plan_demo01",
+      "title": "Session cookie helpers",
+      "description": "Implement signed HttpOnly session create/load/clear in src/auth/session.py. Export create_session, load_session, clear_session.",
+      "assigned_agent": "a1",
+      "files_owned": ["src/auth/session.py"],
+      "depends_on": [],
+      "lane": "parallel",
+      "status": "pending"
+    },
+    {
+      "ticket_id": "t2",
+      "plan_id": "plan_demo01",
+      "title": "JWT issue and verify",
+      "description": "Implement issue_access_token and verify_access_token in src/auth/jwt.py. HS256, 15-minute exp.",
+      "assigned_agent": "a2",
+      "files_owned": ["src/auth/jwt.py"],
+      "depends_on": [],
+      "lane": "parallel",
+      "status": "pending"
+    },
+    {
+      "ticket_id": "t3",
+      "plan_id": "plan_demo01",
+      "title": "authenticate_user dispatcher",
+      "description": "Write src/auth/middleware.py. Cookie first, then Bearer. Call session.py and jwt.py; do not reimplement them.",
+      "assigned_agent": "a1",
+      "files_owned": ["src/auth/middleware.py"],
+      "depends_on": ["t1", "t2"],
+      "lane": "sequential",
+      "status": "pending"
+    },
+    {
+      "ticket_id": "t4",
+      "plan_id": "plan_demo01",
+      "title": "Login routes and tests",
+      "description": "POST /login sets cookie and returns token JSON. POST /logout clears cookie. /me uses authenticate_user. Tests in tests/test_auth.py.",
+      "assigned_agent": "a2",
+      "files_owned": ["src/app.py", "tests/test_auth.py"],
+      "depends_on": ["t3"],
+      "lane": "sequential",
+      "status": "pending"
+    }
+  ]
+}

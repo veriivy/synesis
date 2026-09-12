@@ -1,0 +1,7 @@
+{
+  "type": "approval_updated",
+  "room_id": "room_demo01",
+  "user_id": "u1",
+  "approved": true,
+  "ts": "2026-09-12T03:02:10.000Z"
+}

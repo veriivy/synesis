@@ -1,0 +1,7 @@
+{
+  "type": "error",
+  "room_id": "room_demo01",
+  "where": "k2.analysis",
+  "detail": "moderator returned unparseable JSON; treating the round as not converged",
+  "ts": "2026-09-12T03:00:36.000Z"
+}

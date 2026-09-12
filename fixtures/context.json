@@ -1,0 +1,6 @@
+{
+  "room_id": "room_demo01",
+  "version": 1,
+  "content": "Demo target: a small Python HTTP API (workspace-seed) with a passing test suite and no auth yet.\n\nProject: add authenticate_user so protected routes can tell who is calling.\nConstraints seeded for tonight: Python 3.12, stdlib + the packages already in requirements.txt, no new cloud services unless a user marks them as must.\nExisting layout: src/app.py (routes), src/users.py (in-memory user store), tests/test_app.py.\nSuccess: unauthenticated requests to /me return 401; a successful login lets /me return the current user.",
+  "updated_at": "2026-09-12T03:00:00.000Z"
+}

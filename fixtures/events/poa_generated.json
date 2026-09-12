@@ -1,0 +1,23 @@
+{
+  "type": "poa_generated",
+  "room_id": "room_demo01",
+  "agent_id": "a1",
+  "user_id": "u1",
+  "poa": {
+    "poa_id": "poa_a1",
+    "agent_id": "a1",
+    "user_id": "u1",
+    "summary": "Add cookie-based sessions on top of the existing in-memory user store. No JWT, no external IdP.",
+    "steps": [
+      {
+        "step_id": "s1",
+        "title": "Session store and cookie helpers",
+        "description": "Signed HttpOnly session cookie mapped to user_id.",
+        "files_touched": ["src/auth/session.py"],
+        "rationale": "u1 must: no external identity services; prefer session cookies."
+      }
+    ],
+    "assumptions": ["Mobile clients are out of scope for u1."]
+  },
+  "ts": "2026-09-12T03:00:20.000Z"
+}

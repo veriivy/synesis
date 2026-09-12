@@ -1,0 +1,35 @@
+{
+  "type": "plan_proposed",
+  "room_id": "room_demo01",
+  "plan": {
+    "plan_id": "plan_demo01",
+    "rounds_used": 2,
+    "summary": "Support session cookies and bearer JWT behind one authenticate_user.",
+    "steps": [
+      {
+        "step_id": "s1",
+        "title": "Session cookie helpers",
+        "description": "Signed HttpOnly session cookie.",
+        "files_touched": ["src/auth/session.py"],
+        "rationale": "u1 must."
+      },
+      {
+        "step_id": "s2",
+        "title": "JWT issue and verify",
+        "description": "HS256, 15-minute exp.",
+        "files_touched": ["src/auth/jwt.py"],
+        "rationale": "u2 must."
+      }
+    ],
+    "resolutions": [
+      {
+        "issue_id": "d1",
+        "outcome": "Both mechanisms ship.",
+        "rationale": "Neither must was conceded."
+      }
+    ],
+    "approvals": { "u1": false, "u2": false },
+    "status": "proposed"
+  },
+  "ts": "2026-09-12T03:02:00.000Z"
+}

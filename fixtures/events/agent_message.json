@@ -1,0 +1,9 @@
+{
+  "type": "agent_message",
+  "room_id": "room_demo01",
+  "round": 1,
+  "agent_id": "a1",
+  "content": "HOLD on d1: u1 marked session cookies as must. I will not drop the cookie path. COMPROMISE on d2: I write src/auth/middleware.py as a dispatcher if a2 exports verify_access_token from jwt.py and does not touch middleware.py.",
+  "addresses_issues": ["d1", "d2"],
+  "ts": "2026-09-12T03:00:48.000Z"
+}

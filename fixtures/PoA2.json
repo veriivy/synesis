@@ -1,0 +1,33 @@
+{
+  "poa_id": "poa_a2",
+  "agent_id": "a2",
+  "user_id": "u2",
+  "summary": "Add bearer JWT auth so a mobile client can call the API without cookies. POST /login returns an access token; authenticate_user reads Authorization: Bearer.",
+  "steps": [
+    {
+      "step_id": "s1",
+      "title": "Issue and verify JWTs",
+      "description": "HS256 JWTs with a 15-minute exp, signed with a local secret. Sub claim is user_id. No refresh token in v1.",
+      "files_touched": ["src/auth/jwt.py"],
+      "rationale": "u2 must: bearer JWT; tokens expire in 15 minutes. Local secret keeps us off external IdPs."
+    },
+    {
+      "step_id": "s2",
+      "title": "authenticate_user from the Bearer header",
+      "description": "def authenticate_user(request) -> User | None. Parses Authorization, verifies the JWT, loads the user. Ignore cookies.",
+      "files_touched": ["src/auth/middleware.py"],
+      "rationale": "Same function name as a1, different input. This is the merge conflict waiting to happen."
+    },
+    {
+      "step_id": "s3",
+      "title": "POST /login returns a token in JSON",
+      "description": "login checks src/users.py and returns {\"access_token\", \"token_type\": \"bearer\", \"expires_in\": 900}. /health stays open.",
+      "files_touched": ["src/app.py", "tests/test_auth.py"],
+      "rationale": "u2 want: POST /login returns the token in JSON for the mobile client."
+    }
+  ],
+  "assumptions": [
+    "PyJWT is acceptable if it is already in requirements.txt; otherwise hmac+json in stdlib.",
+    "Browser cookie sessions are out of scope for u2's must-haves."
+  ]
+}

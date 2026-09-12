@@ -1,0 +1,8 @@
+{
+  "type": "user_message",
+  "room_id": "room_demo01",
+  "round": 1,
+  "user_id": "u1",
+  "content": "Do not concede the cookie path. A dual authenticator is fine if the browser still gets a session.",
+  "ts": "2026-09-12T03:00:50.000Z"
+}
