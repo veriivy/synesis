@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.events import EventBus
-from orchestrator.execution import execute_room, write_file
+from orchestrator.execution import execute_room, placeholder_implementer, read_file, write_file
 from orchestrator.rooms import Phase, Room
 from orchestrator.schemas import FinalPlan, Ticket
 
@@ -58,7 +58,8 @@ def test_write_file_rejects_path_outside_files_owned():
     result = write_file(room, ticket, "src/b.py", "content")
 
     assert result.accepted is False
-    assert "does not own" in result.reason
+    assert result.reason.startswith("path_not_owned: src/b.py")
+    assert "a1 owns: src/a.py" in result.reason
     assert "src/b.py" not in room.files
 
 
@@ -107,7 +108,7 @@ async def test_execute_room_runs_parallel_tickets_and_completes_sequential_after
     ]
     bus = EventBus()
 
-    await execute_room(room, bus)
+    await execute_room(room, bus, implement=placeholder_implementer)
 
     assert {t.status for t in room.tickets} == {"done"}
     assert room.phase == Phase.DONE
@@ -133,6 +134,6 @@ async def test_execute_room_fails_tickets_on_a_dangling_dependency():
     ]
     bus = EventBus()
 
-    await execute_room(room, bus)
+    await execute_room(room, bus, implement=placeholder_implementer)
 
     assert room.tickets[0].status == "failed"

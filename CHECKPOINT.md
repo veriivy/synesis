@@ -42,6 +42,37 @@ itself is proven; only "a real model's actual output renders correctly" is
 still unverified — needs item 5's caveat (real keys) resolved together with
 this one.
 
+**Update 4:** the agents now **actually edit the code**. Execution used to
+write `# TODO: implement — ...` stubs; the README called that out as a
+deliberate stand-in ("there's no coding agent in this slice"). There is one
+now — `orchestrator/coding.py`: one model call per ticket, on the
+provider/key of the participant who owns that agent, shown the repo through
+the real `read_file` tool and told exactly which paths it owns. It answers
+in `=== FILE: path ===` blocks rather than JSON (a source file inside a JSON
+string dies to one unescaped newline; a block format loses at most a
+truncated last file), with one retry and then the old stub as the fallback,
+so **a room with no API keys still executes end to end** —
+`EXECUTION_MODE=placeholder` pins that behaviour deliberately.
+
+The part that matters for the judged claim: every path the model returns is
+pushed through `write_file` **unfiltered**, so an agent reaching outside its
+ticket is refused by the runtime and reported as `file_written` with
+`accepted: false`. That makes the refusal a property of the system rather
+than a scripted event — with the honest flip side that on the live path it
+only fires when a model actually overreaches; `/` and `/dev`'s fixture
+replay are what show it deterministically for the pitch.
+
+68 backend tests pass (was 50): `orchestrator/tests/test_coding.py` plus an
+end-to-end test through the real app asserting the generated content lands
+in the file and the unowned write is refused. No provider key exists here,
+so the real wire path (`providers.chat` -> openai client -> socket ->
+parser -> `write_file` -> `GET /files/{path}`) was driven against a local
+OpenAI-compatible stand-in endpoint — three tickets, two dependency waves,
+refusal firing, generated content readable back afterwards. Still unverified
+for the same reason as Update 3: whether a real model writes *good* Python
+in this format. The web side needed no change — `useLiveRoom.ts` already
+re-fetches a file on an accepted `file_written`.
+
 ## Where things stand
 
 **On `main` (merged, working — PR #2 landed):**

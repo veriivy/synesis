@@ -75,13 +75,29 @@ with the short one. Organized roughly by how likely each question is.
 > are unit-tested directly against the enforcement function, not inferred
 > from behavior.
 
+**"Does an agent actually write the code, or is the execution step faked?"**
+> It writes it. Each ticket is a real model call, on that user's own
+> provider, given the repo through a `read_file` tool and told exactly
+> which paths it owns — it returns whole files, and they land in the
+> workspace. The interesting part is that we don't trust the output:
+> *every* path a model asks to write goes through `write_file`, so if it
+> reaches for a file outside its ticket, the runtime refuses it and the
+> refusal shows up in the event stream. Which is also the honest caveat
+> — on a live run that refusal only appears if a model actually
+> overreaches. The one in the recorded demo is a real captured event, not
+> a mock, but it's from a run where that happened.
+
 **"How long does a negotiation round actually take? Isn't 3 rounds of LLM calls slow for a demo?"**
 > Both opening plans generate in parallel, and both agents' replies each
 > round run in parallel too — so a full 3-round negotiation is up to 9
 > individual model calls, but only about 6 sequential round-trips of
-> latency, not 9. [Be honest if asked for a wall-clock number: this hasn't
-> been timed end-to-end against real providers in this session — say so
-> rather than guess.]
+> latency, not 9. Execution adds one call per ticket on top of that, again
+> parallel within a dependency wave. [Be honest if asked for a wall-clock
+> number: this hasn't been timed end-to-end against real providers in this
+> session — say so rather than guess. If execution latency threatens the
+> 3-minute window on the day, `EXECUTION_MODE=placeholder` skips the
+> coding calls and writes stubs instantly — the negotiation, the
+> decomposition and the enforcement all still run.]
 
 ---
 

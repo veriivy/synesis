@@ -1,36 +1,64 @@
 """Ticket execution: CLAUDE.md's "### Agent tools during execution" clause.
 
-write_file() is the actual enforcement described there — it rejects when
-the resolved path escapes the workspace root, the path is not in the
-calling ticket's files_owned, or there is no approved plan. execute_room()
-calls it for every ticket, respecting lane/depends_on, and emits
-ticket_started/file_written/ticket_completed onto the shared EventBus (the
-same one main.py's negotiate loop publishes onto).
+The two tools are real functions here:
 
-No real coding agent exists in this slice (agents.py only drafts/revises
-PoAs), so the "content" a ticket writes is a placeholder stub, not
-generated code. What's real here is the enforcement and the scheduling
-(parallel tickets run concurrently; sequential ones wait on depends_on) —
-not the code the tickets produce. write_file's rejection paths are covered
-by tests/test_execution.py directly, not staged as a scripted demo moment,
-since the ticket validator already guarantees the tickets it's given here
-never legitimately collide.
+  read_file(room, path)                  -> str | None
+  write_file(room, ticket, path, content) -> WriteResult
+
+write_file is the enforcement described there — it rejects when the resolved
+path escapes the workspace root, the path is not in the calling ticket's
+files_owned, or there is no approved plan. execute_room() runs every ticket
+respecting lane/depends_on and emits ticket_started/file_written/
+ticket_completed onto the shared EventBus (the same one main.py's negotiate
+loop publishes onto).
+
+What the tickets write is now real generated code (coding.py), not a
+placeholder stub. That matters for the guarantee this project is judged on:
+the content comes from a model, and EVERY path that model asks to write is
+pushed through write_file below — including one it does not own, which is
+refused by this code and reported as `file_written` with accepted=false. The
+refusal is therefore a property of the runtime, not a scripted demo event;
+the flip side is that in a live room it only appears if a model actually
+overreaches. The fixture demo (web/lib/fixtures.ts) still shows it every
+time, deterministically.
+
+A ticket whose coding call fails falls back to the placeholder stub rather
+than writing nothing, so a room with no API keys still executes end to end.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from .coding import TicketCode, implement_ticket, placeholder_code, placeholder_content
 from .events import EventBus, utc_now
 from .rooms import FileState, Phase, Room
 from .schemas import Ticket
+
+log = logging.getLogger(__name__)
+
+#: "agent" (default) codes each ticket with a real model call. "placeholder"
+#: skips that and writes stubs — the pre-coding-agent behaviour, kept as an
+#: escape hatch for when latency matters more than content (a rehearsal on
+#: venue wifi, a demo with no keys).
+def execution_mode() -> str:
+    return (os.getenv("EXECUTION_MODE", "agent").strip() or "agent").lower()
 
 
 @dataclass
 class WriteResult:
     accepted: bool
     reason: str | None = None
+
+
+#: (room, ticket) -> the code that ticket wants to write.
+Implementer = Callable[[Room, Ticket], Awaitable[TicketCode]]
+#: agent_id -> (provider, api_key); main.py passes the room's BYO choice.
+ProviderFor = Callable[[str], tuple[str | None, str | None]]
 
 
 def _escapes_workspace(path: str) -> bool:
@@ -52,6 +80,17 @@ def _escapes_workspace(path: str) -> bool:
     return False
 
 
+def read_file(room: Room, path: str) -> str | None:
+    """CLAUDE.md's `read_file(path) -> str`. Reading is unrestricted within
+    the workspace — a ticket may read anything to write its own files
+    correctly; only writing is capability-scoped. A path outside the
+    workspace reads as missing rather than reaching the real filesystem."""
+    if _escapes_workspace(path):
+        return None
+    f = room.files.get(path)
+    return None if f is None else f.content
+
+
 def write_file(room: Room, ticket: Ticket, path: str, content: str) -> WriteResult:
     """The one enforcement point. Every rule here is a hard reject, not a
     prompt — see CLAUDE.md: "write_file rejects when: the resolved path
@@ -62,23 +101,54 @@ def write_file(room: Room, ticket: Ticket, path: str, content: str) -> WriteResu
     if _escapes_workspace(path):
         return WriteResult(accepted=False, reason=f"path escapes workspace root: {path!r}")
     if path not in ticket.files_owned:
+        # Name the real owner when there is one — same shape as the contract's
+        # own sample event, fixtures/events/file_written_rejected.json.
+        owner = next((t for t in room.tickets if path in t.files_owned), None)
+        whose = (
+            f"belongs to ticket {owner.ticket_id} (owner {owner.assigned_agent})"
+            if owner is not None
+            else "is not owned by any ticket"
+        )
         return WriteResult(
             accepted=False,
-            reason=f"ticket {ticket.ticket_id} does not own {path!r} (owns {ticket.files_owned})",
+            reason=(
+                f"path_not_owned: {path} {whose}. "
+                f"Agent {ticket.assigned_agent} owns: {', '.join(ticket.files_owned) or 'nothing'}."
+            ),
         )
 
     room.files[path] = FileState(content=content, last_written_by=ticket.assigned_agent)
     return WriteResult(accepted=True)
 
 
-def _placeholder_content(ticket: Ticket, path: str) -> str:
-    return (
-        f'"""{ticket.title}. Owned by {ticket.assigned_agent} (ticket {ticket.ticket_id})."""\n\n'
-        f"# TODO: implement — {ticket.description}\n"
-    )
+def agent_implementer(provider_for: ProviderFor | None = None) -> Implementer:
+    """The default: each ticket's files are written by a real model call,
+    with the repo it can read handed over through read_file."""
+
+    async def implement(room: Room, ticket: Ticket) -> TicketCode:
+        if execution_mode() == "placeholder":
+            return placeholder_code(ticket)
+        provider, api_key = provider_for(ticket.assigned_agent) if provider_for else (None, None)
+        return await implement_ticket(
+            ticket=ticket,
+            all_tickets=list(room.tickets),
+            plan=room.plan,
+            context=room.project_context or None,
+            read_file=lambda path: read_file(room, path),
+            paths=list(room.files.keys()),
+            provider=provider,
+            api_key=api_key,
+        )
+
+    return implement
 
 
-async def _run_ticket(room: Room, ticket: Ticket, bus: EventBus) -> None:
+async def placeholder_implementer(room: Room, ticket: Ticket) -> TicketCode:
+    """No model call at all. Used by tests, and by EXECUTION_MODE=placeholder."""
+    return placeholder_code(ticket)
+
+
+async def _run_ticket(room: Room, ticket: Ticket, bus: EventBus, implement: Implementer) -> None:
     await bus.publish(
         room.room_id,
         {
@@ -92,9 +162,36 @@ async def _run_ticket(room: Room, ticket: Ticket, bus: EventBus) -> None:
         if t.ticket_id == ticket.ticket_id:
             t.status = "running"
 
-    ok = True
+    try:
+        code = await implement(room, ticket)
+    except Exception as exc:  # noqa: BLE001 — a coder blowing up fails one ticket, not the room
+        log.exception("coding failed for %s", ticket.ticket_id)
+        code = placeholder_code(ticket, error=str(exc))
+
+    if code.error:
+        await bus.publish(
+            room.room_id,
+            {
+                "type": "error",
+                "where": f"execute.{ticket.ticket_id}",
+                "detail": f"coding agent unavailable, wrote placeholders: {code.error}",
+                "ts": utc_now(),
+            },
+        )
+
+    # Every path the model asked for, in its own order — an unowned one is
+    # refused below rather than filtered out here. Then any file the ticket
+    # owns that the model did not produce, so a ticket always writes its own
+    # files.
+    to_write = dict(code.files)
     for path in ticket.files_owned:
-        result = write_file(room, ticket, path, _placeholder_content(ticket, path))
+        to_write.setdefault(path, placeholder_content(ticket, path))
+
+    accepted_paths: set[str] = set()
+    for path, content in to_write.items():
+        result = write_file(room, ticket, path, content)
+        if result.accepted:
+            accepted_paths.add(path)
         await bus.publish(
             room.room_id,
             {
@@ -107,8 +204,10 @@ async def _run_ticket(room: Room, ticket: Ticket, bus: EventBus) -> None:
                 "ts": utc_now(),
             },
         )
-        ok = ok and result.accepted
 
+    # A refused write is the runtime working as designed, not the ticket
+    # failing: the ticket is done when everything it owns has been written.
+    ok = all(path in accepted_paths for path in ticket.files_owned)
     status = "done" if ok else "failed"
     for t in room.tickets:
         if t.ticket_id == ticket.ticket_id:
@@ -119,15 +218,17 @@ async def _run_ticket(room: Room, ticket: Ticket, bus: EventBus) -> None:
     )
 
 
-async def execute_room(room: Room, bus: EventBus) -> None:
+async def execute_room(
+    room: Room, bus: EventBus, *, implement: Implementer | None = None
+) -> None:
     """Runs every ticket to completion, respecting lane/depends_on: all
-    tickets whose dependencies are already satisfied run concurrently; a
-    ticket with unmet depends_on waits. CLAUDE.md's cut-order item #2 ("run
-    parallel-only, still show depends_on in the UI") is not applied here —
-    since this executor only ever produces placeholder writes, actually
-    respecting sequential ordering costs nothing and is more honest than
-    faking it.
+    tickets whose dependencies are already satisfied run concurrently (their
+    coding calls included, so two agents really do write at the same time);
+    a ticket with unmet depends_on waits. CLAUDE.md's cut-order item #2
+    ("run parallel-only") is not applied — sequential ordering is what lets
+    a later ticket read the code an earlier one actually wrote.
     """
+    run = implement or agent_implementer()
     remaining = {t.ticket_id: t for t in room.tickets}
     done: set[str] = set()
 
@@ -144,7 +245,7 @@ async def execute_room(room: Room, bus: EventBus) -> None:
                 )
             return
 
-        await asyncio.gather(*(_run_ticket(room, t, bus) for t in ready))
+        await asyncio.gather(*(_run_ticket(room, t, bus, run) for t in ready))
         for t in ready:
             done.add(t.ticket_id)
             del remaining[t.ticket_id]

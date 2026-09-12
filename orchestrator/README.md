@@ -34,6 +34,13 @@ fail and report a clean `error` event over SSE rather than hang or crash
 — verified manually against a running instance (`curl -N` on
 `/rooms/{id}/stream`).
 
+`EXECUTION_MODE` (default `agent`) controls what `POST /execute` writes.
+On `agent`, each ticket costs one model call, so a four-ticket plan in two
+dependency waves is two waves of real latency — the tickets within a wave
+code concurrently, not serially. Set `EXECUTION_MODE=placeholder` to get
+the old instant TODO stubs when you are rehearsing timing rather than
+showing content.
+
 `MONGODB_URI` is also optional — unset, every room stays in-memory only,
 same as before this was added. Set it (an Atlas `mongodb+srv://...`
 connection string) to get durable persistence; see "What's real" below
@@ -93,6 +100,40 @@ resolution rather than a fabricated one.
   the workspace root, a path outside the calling ticket's `files_owned`,
   or any write before the plan is approved — proven directly in
   `tests/test_execution.py`, not staged as a demo moment.
+- The coding agent (`coding.py`): each ticket's files are written by a real
+  model call, on the provider/key of the participant who owns that agent
+  (same BYO threading as the negotiation loop). The coder is shown the
+  repo through `execution.read_file`, told exactly which paths it owns, and
+  asked for whole files in a line-delimited `=== FILE: path ===` block
+  format rather than JSON — a source file inside a JSON string loses
+  everything to one unescaped newline or a truncated tail, where a block
+  format loses at most the last file. One retry on an unparseable reply,
+  then the placeholder stub, which is CLAUDE.md's timeout/retry/fallback
+  rule for every model call. **Every path the model returns goes through
+  `write_file`, unfiltered** — so a coder reaching for a file its ticket
+  does not own is refused by the runtime and reported as `file_written`
+  with `accepted: false`, which is also why that refusal is no longer a
+  staged moment on the live path: it happens when a model actually
+  overreaches, and the fixture demo (`web/lib/fixtures.ts`) is what shows
+  it deterministically. A ticket whose coding call fails still writes its
+  own files as stubs and emits a clean `error` event, so a room with no
+  keys at all still executes end to end. `EXECUTION_MODE=placeholder`
+  turns the whole thing off and restores the old stub behaviour.
+  Tests: `tests/test_coding.py` (parser, budgeted context, the retry and
+  fallback chain, refusal of an unowned path, a later ticket reading what
+  an earlier one actually wrote) plus
+  `tests/test_end_to_end.py::test_execution_writes_the_coding_agents_output_and_refuses_an_unowned_path`
+  through the live app. **What is not verified here: a real model's actual
+  code.** No provider key exists in this environment, so the real path —
+  `providers.chat` -> the OpenAI client -> a socket -> `parse_file_blocks`
+  -> `write_file` -> `GET /files/{path}` — was driven against a local
+  OpenAI-compatible stand-in endpoint instead (three tickets, two waves,
+  the refusal firing on the unowned path, the generated content readable
+  back off the room afterwards). Everything but the model itself is
+  therefore exercised over the wire; whether a given model reliably
+  produces good Python in this format is the one thing still waiting on a
+  key. Same caveat as the negotiation loop's own output, "Update 3" in
+  `CHECKPOINT.md`.
 - `ticketing.py`'s JSON-repair retry, matching the pattern `k2.analyze`
   already uses (one retry, then let it fail loudly).
 - BYO keys (`db.py`'s sibling feature, `_agent_provider_and_key` in
@@ -125,11 +166,6 @@ resolution rather than a fabricated one.
   no-URI no-op path and the snapshot's own shape/exclusions are tested.
 
 **Real, but a deliberate stand-in:**
-- Ticket execution writes placeholder content
-  (`# TODO: implement — ...`), not real generated code — there's no
-  coding agent in this slice. What's real is the scheduling (parallel
-  tickets run concurrently, sequential ones wait on `depends_on`) and the
-  enforcement, not what gets written.
 - `agents.draft_poa`'s opening PoA has no cross-agent visibility (by
   design — it's the *opening* plan) and, like the rest of this codebase,
   can only produce a real K2-diffable conflict if the two users' task text
@@ -160,13 +196,16 @@ orchestrator/
   workspace.py    seeded demo repo, mirrors web/lib/workspace.ts
   validator.py    the disjoint-file-ownership guarantee
   ticketing.py    plan -> tickets, K2 call + validator
-  execution.py    write_file enforcement + the simulated ticket executor
+  coding.py       the coding agent: one model call per ticket -> real file content
+  execution.py    read_file/write_file tools + the ticket executor
   db.py           MongoDB Atlas persistence, optional, no-ops without MONGODB_URI
   main.py         the FastAPI app — every endpoint in the frozen contract
   tests/
     test_validator.py     pure, no model calls
     test_ticketing.py     scripted fake chat_fn, no network
     test_execution.py     write_file + execute_room in isolation
+    test_coding.py        the coder: block parsing, retry/fallback, and that
+                           execute_room enforces whatever it hands back
     test_rooms.py         room_snapshot's shape and its api_key exclusion
     test_db.py            db.py's no-op behavior without MONGODB_URI
     test_byo_keys.py      provider_key_for/resolve, and that a participant's

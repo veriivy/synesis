@@ -46,7 +46,7 @@ from pydantic import BaseModel
 from . import db
 from .agents import draft_poa, revise_poa
 from .events import EventBus, utc_now
-from .execution import execute_room
+from .execution import agent_implementer, execute_room
 from .k2 import analyze, blocking_ids, has_converged, load_fixture
 from .providers import provider_key_for, provider_status
 from .rooms import Phase, Room, RoomStore, room_snapshot
@@ -342,7 +342,14 @@ async def execute(room_id: str) -> dict:
 
     async def _run() -> None:
         try:
-            await execute_room(room, bus)
+            # The coder for each ticket runs on the provider/key of the
+            # participant who owns that agent — same BYO threading the
+            # negotiation loop uses (_agent_provider_and_key).
+            await execute_room(
+                room,
+                bus,
+                implement=agent_implementer(lambda agent_id: _agent_provider_and_key(room, agent_id)),
+            )
         except Exception as exc:  # noqa: BLE001
             log.exception("execute failed for %s", room_id)
             room.phase = Phase.FAILED
