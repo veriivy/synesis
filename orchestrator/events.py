@@ -29,6 +29,11 @@ class EventBus:
         for queue in list(self._subs[room_id]):
             await queue.put(event)
 
+    def history(self, room_id: str) -> list[dict]:
+        """The event log so far, in order. Used by tests that assert on
+        what a room published without opening a real SSE connection."""
+        return list(self._history[room_id])
+
     async def stream(self, room_id: str):
         queue: asyncio.Queue = asyncio.Queue()
         self._subs[room_id].append(queue)
