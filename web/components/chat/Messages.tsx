@@ -1,0 +1,241 @@
+import type { FileWritten, TicketStatus } from "@/lib/types";
+import {
+  type RoomState,
+  differenceById,
+  participantById,
+  participantOfAgent,
+} from "@/lib/roomReducer";
+import { clock, PROVIDER_COLOR, PROVIDER_LABEL, ProviderDot, Tag } from "@/components/ui";
+
+/* --------------------------------- user ------------------------------------ */
+
+export function UserMessage({
+  state,
+  userId,
+  content,
+  ts,
+}: {
+  state: RoomState;
+  userId: string;
+  content: string;
+  ts: string;
+}) {
+  const p = participantById(state, userId);
+  const name = p?.display_name ?? userId;
+  return (
+    <div className="flex gap-2.5 px-4 py-2">
+      <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-ide-active font-mono text-[10px] text-ide-dim">
+        {name.slice(0, 1).toUpperCase()}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[12px] font-medium text-ide-text">{name}</span>
+          {p?.is_local && <span className="font-mono text-[10px] text-ide-faint">you</span>}
+          <span className="font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
+        </div>
+        <p className="mt-0.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ide-text">
+          {content}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------- agent ----------------------------------- */
+
+export function AgentMessage({
+  state,
+  agentId,
+  content,
+  addressesIssues,
+  ts,
+}: {
+  state: RoomState;
+  agentId: string;
+  content: string;
+  addressesIssues: string[];
+  ts: string;
+}) {
+  const owner = participantOfAgent(state, agentId);
+  const provider = owner?.provider;
+  const color = provider ? PROVIDER_COLOR[provider] : "var(--color-ide-faint)";
+
+  return (
+    <div className="px-4 py-1.5">
+      <div
+        className="rounded-sm border-l-2 bg-ide-panel/70 py-2 pr-3 pl-3"
+        style={{ borderColor: color }}
+      >
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <ProviderDot provider={provider} />
+          <span className="font-mono text-[11px] text-ide-text">{agentId}</span>
+          <span className="text-[11px] text-ide-faint">
+            advocate for {owner?.display_name ?? "—"}
+          </span>
+          {provider && (
+            <span className="font-mono text-[10px]" style={{ color }}>
+              {PROVIDER_LABEL[provider]}
+            </span>
+          )}
+          <span className="ml-auto flex items-center gap-1">
+            {addressesIssues.map((id) => {
+              const d = differenceById(state, id);
+              return (
+                <Tag
+                  key={id}
+                  color={
+                    d?.severity === "blocking"
+                      ? "var(--color-ide-blocking)"
+                      : d?.severity === "minor"
+                        ? "var(--color-ide-minor)"
+                        : undefined
+                  }
+                  title={d ? `${id} — ${d.topic} (${d.severity})` : `addresses ${id}`}
+                >
+                  {id}
+                </Tag>
+              );
+            })}
+            <span className="ml-1 font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
+          </span>
+        </div>
+        <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ide-text">
+          {content}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- moderator --------------------------------- */
+
+const K2 = "var(--color-ide-k2)";
+
+export function ModeratorMessage({
+  content,
+  round,
+  ts,
+}: {
+  content: string;
+  round: number;
+  ts: string;
+}) {
+  return (
+    <div className="px-4 py-2">
+      <div
+        className="flex gap-3 rounded border-l-[3px] px-3 py-3"
+        style={{
+          borderColor: K2,
+          background: "color-mix(in srgb, var(--color-ide-k2) 9%, var(--color-ide-panel))",
+        }}
+      >
+        <span
+          aria-hidden
+          className="mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-sm font-mono text-[10px] font-semibold"
+          style={{
+            color: K2,
+            background: "color-mix(in srgb, var(--color-ide-k2) 18%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-ide-k2) 45%, transparent)",
+          }}
+        >
+          K2
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className="font-mono text-[10px] font-semibold tracking-widest uppercase"
+              style={{ color: K2 }}
+            >
+              moderator
+            </span>
+            <span className="font-mono text-[10px] text-ide-faint">round {round}</span>
+            <span className="ml-auto font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
+          </div>
+          <p className="mt-1 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ide-text">
+            {content}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------- system ---------------------------------- */
+
+export function SystemRow({
+  children,
+  ts,
+  color,
+}: {
+  children: React.ReactNode;
+  ts?: string;
+  color?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-4 py-1 font-mono text-[11px] text-ide-faint">
+      <span className="shrink-0" style={color ? { color } : undefined}>
+        ·
+      </span>
+      <span className="min-w-0 flex-1 truncate" style={color ? { color } : undefined}>
+        {children}
+      </span>
+      {ts && <span className="shrink-0">{clock(ts)}</span>}
+    </div>
+  );
+}
+
+export function RoundDivider({ round }: { round: number }) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <div className="h-px flex-1 bg-ide-border" />
+      <span className="font-mono text-[10px] tracking-widest text-ide-faint uppercase">
+        round {round} complete
+      </span>
+      <div className="h-px flex-1 bg-ide-border" />
+    </div>
+  );
+}
+
+/* ------------------------------ file writes -------------------------------- */
+
+export function FileWrittenRow({ write }: { write: FileWritten }) {
+  if (write.accepted) {
+    return (
+      <div className="flex items-center gap-2 px-4 py-1 font-mono text-[11px]">
+        <span style={{ color: "var(--color-ide-ok)" }}>✓</span>
+        <span className="text-ide-dim">{write.path}</span>
+        <span className="text-ide-faint">
+          written by {write.agent_id} · {write.ticket_id}
+        </span>
+        <span className="ml-auto text-ide-faint">{clock(write.ts)}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="px-4 py-1.5">
+      <div
+        className="rounded-sm border-l-2 px-3 py-2"
+        style={{
+          borderColor: "var(--color-ide-blocking)",
+          background: "color-mix(in srgb, var(--color-ide-blocking) 10%, var(--color-ide-panel))",
+        }}
+      >
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          <span style={{ color: "var(--color-ide-blocking)" }}>✕ write rejected</span>
+          <span className="text-ide-dim">{write.path}</span>
+          <span className="ml-auto text-ide-faint">{clock(write.ts)}</span>
+        </div>
+        <p className="mt-1 font-mono text-[11px] leading-relaxed text-ide-dim">
+          {write.agent_id} · {write.ticket_id} — {write.reason}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export const TICKET_STATUS_COLOR: Record<TicketStatus, string> = {
+  pending: "var(--color-ide-faint)",
+  running: "var(--color-ide-accent)",
+  done: "var(--color-ide-ok)",
+  failed: "var(--color-ide-blocking)",
+};
