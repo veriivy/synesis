@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { analysisForRound, type ChatItem, type RoomState } from "@/lib/roomReducer";
+import { type ChatItem, type RoomState, participantById } from "@/lib/roomReducer";
 import { AnalysisCard } from "@/components/chat/AnalysisCard";
 import { PlanCard } from "@/components/chat/PlanCard";
 import { PoACard } from "@/components/chat/PoACard";
@@ -34,6 +34,7 @@ function ContextCard({ version, content, ts }: { version: number; content: strin
   );
 }
 
+/** One ordered array of heterogeneous items: every kind is a render case here. */
 function Item({
   state,
   item,
@@ -42,48 +43,48 @@ function Item({
 }: {
   state: RoomState;
   item: ChatItem;
-  onApprove?: (user_id: string, approved: boolean) => void;
+  onApprove?: (userId: string, approved: boolean) => void;
   onSelectFile?: (path: string) => void;
 }) {
   switch (item.kind) {
-    case "participant_joined": {
-      const p = state.participants[item.user_id];
+    case "user":
+      return (
+        <UserMessage state={state} userId={item.userId} content={item.content} ts={item.ts} />
+      );
+    case "agent":
+      return (
+        <AgentMessage
+          state={state}
+          agentId={item.agentId}
+          content={item.content}
+          addressesIssues={item.addressesIssues}
+          ts={item.ts}
+        />
+      );
+    case "moderator":
+      return <ModeratorMessage content={item.content} round={item.round} ts={item.ts} />;
+    case "analysis":
+      return <AnalysisCard state={state} analysis={item.analysis} ts={item.ts} />;
+    case "plan":
+      return <PlanCard state={state} ts={item.ts} onApprove={onApprove} />;
+    case "poa":
+      return <PoACard state={state} poa={item.poa} ts={item.ts} />;
+    case "tickets":
+      return <TicketsCard state={state} ts={item.ts} onSelectFile={onSelectFile} />;
+    case "participant": {
+      const p = participantById(state, item.userId);
       return (
         <SystemRow ts={item.ts}>
-          {p?.display_name ?? item.user_id} joined
+          {p?.display_name ?? item.userId} joined
           {p?.provider ? ` with ${PROVIDER_LABEL[p.provider]}` : ""}
           {p?.model ? ` (${p.model})` : ""}
         </SystemRow>
       );
     }
-    case "poa":
-      return <PoACard state={state} agent_id={item.agent_id} ts={item.ts} />;
-    case "analysis": {
-      const analysis = analysisForRound(state, item.round);
-      return analysis ? <AnalysisCard state={state} analysis={analysis} ts={item.ts} /> : null;
-    }
-    case "agent_message":
-      return (
-        <AgentMessage
-          state={state}
-          agent_id={item.agent_id}
-          content={item.content}
-          addresses_issues={item.addresses_issues}
-          ts={item.ts}
-        />
-      );
-    case "user_message":
-      return (
-        <UserMessage state={state} user_id={item.user_id} content={item.content} ts={item.ts} />
-      );
-    case "moderator_message":
-      return <ModeratorMessage content={item.content} round={item.round} ts={item.ts} />;
-    case "round_complete":
+    case "roundComplete":
       return <RoundDivider round={item.round} />;
-    case "plan":
-      return <PlanCard state={state} ts={item.ts} onApprove={onApprove} />;
     case "approval": {
-      const name = state.participants[item.user_id]?.display_name ?? item.user_id;
+      const name = participantById(state, item.userId)?.display_name ?? item.userId;
       return (
         <SystemRow
           ts={item.ts}
@@ -93,39 +94,28 @@ function Item({
         </SystemRow>
       );
     }
-    case "plan_approved":
+    case "planApproved":
       return (
         <SystemRow ts={item.ts} color="var(--color-ide-ok)">
-          {item.plan_id} approved by every user — plan is now binding
+          {item.planId} approved by every user — plan is now binding
         </SystemRow>
       );
-    case "context_updated":
+    case "context":
       return <ContextCard version={item.version} content={item.content} ts={item.ts} />;
-    case "tickets":
-      return <TicketsCard state={state} ts={item.ts} onSelectFile={onSelectFile} />;
-    case "ticket_started":
+    case "ticketStarted":
       return (
         <SystemRow ts={item.ts} color="var(--color-ide-accent)">
-          {item.ticket_id} started · {item.agent_id}
+          {item.ticketId} started · {item.agentId}
         </SystemRow>
       );
-    case "ticket_completed":
+    case "ticketCompleted":
       return (
         <SystemRow ts={item.ts} color={TICKET_STATUS_COLOR[item.status]}>
-          {item.ticket_id} {item.status}
+          {item.ticketId} {item.status}
         </SystemRow>
       );
-    case "file_written":
-      return (
-        <FileWrittenRow
-          path={item.path}
-          agent_id={item.agent_id}
-          ticket_id={item.ticket_id}
-          accepted={item.accepted}
-          reason={item.reason}
-          ts={item.ts}
-        />
-      );
+    case "write":
+      return <FileWrittenRow write={item.write} />;
     case "error":
       return (
         <SystemRow ts={item.ts} color="var(--color-ide-blocking)">
@@ -142,7 +132,7 @@ export function ChatPanel({
   onSend,
 }: {
   state: RoomState;
-  onApprove?: (user_id: string, approved: boolean) => void;
+  onApprove?: (userId: string, approved: boolean) => void;
   onSelectFile?: (path: string) => void;
   onSend?: (content: string) => void;
 }) {
@@ -154,7 +144,7 @@ export function ChatPanel({
   useEffect(() => {
     const el = scroller.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [state.items.length]);
+  }, [state.messages.length]);
 
   function onScroll() {
     const el = scroller.current;
@@ -176,21 +166,23 @@ export function ChatPanel({
         <span className="font-mono text-[10px] tracking-widest text-ide-faint uppercase">
           negotiation
         </span>
-        {state.round > 0 && (
-          <span className="font-mono text-[10px] text-ide-faint">round {state.round} / 3</span>
+        {state.currentRound > 0 && (
+          <span className="font-mono text-[10px] text-ide-faint">
+            round {state.currentRound} / 3
+          </span>
         )}
         <span className="ml-auto font-mono text-[10px] text-ide-faint">
-          {state.items.length} events
+          {state.messages.length} events
         </span>
       </header>
 
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto py-2">
-        {state.items.length === 0 && (
+        {state.messages.length === 0 && (
           <p className="px-4 py-6 text-[12px] text-ide-faint">
             Waiting for the room to fill. Participants, plans of action, and the K2 diff land here.
           </p>
         )}
-        {state.items.map((item) => (
+        {state.messages.map((item) => (
           <Item
             key={item.id}
             state={state}

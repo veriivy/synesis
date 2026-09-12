@@ -8,8 +8,8 @@ import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-import type { FileState, RoomState } from "@/lib/roomReducer";
-import { userOfAgent } from "@/lib/roomReducer";
+import { type RoomState, participantOfAgent, rejectedWrites } from "@/lib/roomReducer";
+import { languageFor } from "@/lib/workspace";
 import { PROVIDER_COLOR, ProviderDot, clock } from "@/components/ui";
 
 SyntaxHighlighter.registerLanguage("python", python);
@@ -21,9 +21,9 @@ SyntaxHighlighter.registerLanguage("tsx", tsx);
 const SUPPORTED = new Set(["python", "markdown", "json", "bash", "tsx"]);
 
 export function CodeViewer({ state, path }: { state: RoomState; path: string | null }) {
-  const file: FileState | undefined = path ? state.files[path] : undefined;
+  const file = path ? state.files[path] : undefined;
 
-  if (!file) {
+  if (!file || !path) {
     return (
       <div className="flex h-full items-center justify-center bg-ide-bg">
         <p className="text-[12px] text-ide-faint">Select a file</p>
@@ -31,28 +31,27 @@ export function CodeViewer({ state, path }: { state: RoomState; path: string | n
     );
   }
 
-  const writer = file.last_written_by ? userOfAgent(state, file.last_written_by) : undefined;
+  const writer = file.lastWrittenBy ? participantOfAgent(state, file.lastWrittenBy) : undefined;
   const writerColor = writer?.provider ? PROVIDER_COLOR[writer.provider] : undefined;
-  const lastRejection = file.rejected_by.at(-1);
-  const language = SUPPORTED.has(file.language) ? file.language : "text";
+  const lastRefusal = rejectedWrites(state, path).at(-1);
+  const accepted = state.writeLog.filter((w) => w.path === path && w.accepted).at(-1);
+  const language = SUPPORTED.has(languageFor(path)) ? languageFor(path) : "text";
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-ide-bg">
       <header className="flex h-8 shrink-0 items-center gap-2 border-b border-ide-border px-3">
-        <span className="truncate font-mono text-[11px] text-ide-dim">{file.path}</span>
+        <span className="truncate font-mono text-[11px] text-ide-dim">{path}</span>
         <span className="font-mono text-[10px] text-ide-faint">read-only</span>
-        {file.last_written_by && (
+        {file.lastWrittenBy && (
           <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[10px]">
             <ProviderDot provider={writer?.provider} size={6} />
-            <span style={{ color: writerColor }}>{file.last_written_by}</span>
-            <span className="text-ide-faint">
-              wrote {file.written_at ? clock(file.written_at) : ""}
-            </span>
+            <span style={{ color: writerColor }}>{file.lastWrittenBy}</span>
+            <span className="text-ide-faint">wrote {accepted ? clock(accepted.ts) : ""}</span>
           </span>
         )}
       </header>
 
-      {lastRejection && (
+      {lastRefusal && (
         <div
           className="shrink-0 border-b px-3 py-1.5 font-mono text-[11px]"
           style={{
@@ -61,7 +60,7 @@ export function CodeViewer({ state, path }: { state: RoomState; path: string | n
             color: "var(--color-ide-blocking)",
           }}
         >
-          ✕ {lastRejection.agent_id} tried to write this file and was refused — {lastRejection.reason}
+          ✕ {lastRefusal.agent_id} tried to write this file and was refused — {lastRefusal.reason}
         </div>
       )}
 

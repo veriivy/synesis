@@ -5,15 +5,14 @@
 
 export interface WorkspaceFile {
   path: string;
-  language: string;
   content: string;
+  /** What the file becomes once its owning agent lands an accepted write. */
   after?: string;
 }
 
 export const workspaceFiles: WorkspaceFile[] = [
   {
     path: "README.md",
-    language: "markdown",
     content: `# ledger-api
 
 Small expense-tracking API. Currently unauthenticated: every route is public
@@ -34,7 +33,6 @@ and \`current_user\` is hard-coded to the seed user.
   },
   {
     path: "requirements.txt",
-    language: "text",
     content: `fastapi==0.115.0
 uvicorn==0.30.6
 pydantic==2.9.2
@@ -43,7 +41,6 @@ pytest==8.3.3
   },
   {
     path: "src/app.py",
-    language: "python",
     content: `from fastapi import FastAPI
 
 from src.models.user import SEED_USER, User
@@ -74,12 +71,10 @@ def create_expense(amount_cents: int, memo: str) -> dict:
   },
   {
     path: "src/auth/__init__.py",
-    language: "python",
     content: "",
   },
   {
     path: "src/auth/session.py",
-    language: "python",
     content: `"""Session helpers. Not written yet — ticket t1 (a1)."""
 `,
     after: `"""HttpOnly cookie sessions. Owned by a1 (ticket t1)."""
@@ -124,7 +119,6 @@ def revoke_session(sid: str) -> None:
   },
   {
     path: "src/auth/jwt.py",
-    language: "python",
     content: `"""JWT helpers. Not written yet — ticket t2 (a2)."""
 `,
     after: `"""HS256 bearer tokens, 15 minute expiry. Owned by a2 (ticket t2)."""
@@ -172,7 +166,6 @@ def verify_access_token(token: str) -> str | None:
   },
   {
     path: "src/auth/middleware.py",
-    language: "python",
     content: `"""authenticate_user dispatcher. Not written yet — ticket t3 (a1)."""
 `,
     after: `"""One gate, two mechanisms. Cookie first, then Bearer. Owned by a1 (ticket t3)."""
@@ -198,7 +191,6 @@ def authenticate_user(cookies: dict[str, str], headers: dict[str, str]) -> User 
   },
   {
     path: "src/models/user.py",
-    language: "python",
     content: `from dataclasses import dataclass
 
 
@@ -224,7 +216,6 @@ def find_user_by_email(email: str) -> User | None:
   },
   {
     path: "tests/test_auth.py",
-    language: "python",
     content: `import pytest
 
 pytestmark = pytest.mark.skip(reason="no authentication yet — ticket t4 (a2)")
@@ -235,6 +226,16 @@ def test_login_sets_cookie_and_returns_token():
 `,
   },
 ];
+
+/** The viewer needs a Prism language name; the path is the only source for it. */
+export function languageFor(path: string): string {
+  if (path.endsWith(".py")) return "python";
+  if (path.endsWith(".md")) return "markdown";
+  if (path.endsWith(".json")) return "json";
+  if (path.endsWith(".sh")) return "bash";
+  if (path.endsWith(".ts") || path.endsWith(".tsx")) return "tsx";
+  return "text";
+}
 
 /* ------------------------------ tree building ------------------------------- */
 

@@ -1,22 +1,22 @@
-import type { TicketStatus } from "@/lib/contract";
-import { type RoomState, userOfAgent } from "@/lib/roomReducer";
+import type { FileWritten, TicketStatus } from "@/lib/types";
+import { type RoomState, participantById, participantOfAgent } from "@/lib/roomReducer";
 import { clock, PROVIDER_COLOR, PROVIDER_LABEL, ProviderDot, Tag } from "@/components/ui";
 
 /* --------------------------------- user ------------------------------------ */
 
 export function UserMessage({
   state,
-  user_id,
+  userId,
   content,
   ts,
 }: {
   state: RoomState;
-  user_id: string;
+  userId: string;
   content: string;
   ts: string;
 }) {
-  const p = state.participants[user_id];
-  const name = p?.display_name ?? user_id;
+  const p = participantById(state, userId);
+  const name = p?.display_name ?? userId;
   return (
     <div className="flex gap-2.5 px-4 py-2">
       <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-ide-active font-mono text-[10px] text-ide-dim">
@@ -40,18 +40,18 @@ export function UserMessage({
 
 export function AgentMessage({
   state,
-  agent_id,
+  agentId,
   content,
-  addresses_issues,
+  addressesIssues,
   ts,
 }: {
   state: RoomState;
-  agent_id: string;
+  agentId: string;
   content: string;
-  addresses_issues: string[];
+  addressesIssues: string[];
   ts: string;
 }) {
-  const owner = userOfAgent(state, agent_id);
+  const owner = participantOfAgent(state, agentId);
   const provider = owner?.provider;
   const color = provider ? PROVIDER_COLOR[provider] : "var(--color-ide-faint)";
 
@@ -63,7 +63,7 @@ export function AgentMessage({
       >
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <ProviderDot provider={provider} />
-          <span className="font-mono text-[11px] text-ide-text">{agent_id}</span>
+          <span className="font-mono text-[11px] text-ide-text">{agentId}</span>
           <span className="text-[11px] text-ide-faint">
             advocate for {owner?.display_name ?? "—"}
           </span>
@@ -73,7 +73,7 @@ export function AgentMessage({
             </span>
           )}
           <span className="ml-auto flex items-center gap-1">
-            {addresses_issues.map((id) => (
+            {addressesIssues.map((id) => (
               <Tag key={id} title={`addresses ${id}`}>
                 {id}
               </Tag>
@@ -165,30 +165,16 @@ export function RoundDivider({ round }: { round: number }) {
 
 /* ------------------------------ file writes -------------------------------- */
 
-export function FileWrittenRow({
-  path,
-  agent_id,
-  ticket_id,
-  accepted,
-  reason,
-  ts,
-}: {
-  path: string;
-  agent_id: string;
-  ticket_id: string;
-  accepted: boolean;
-  reason: string | null;
-  ts: string;
-}) {
-  if (accepted) {
+export function FileWrittenRow({ write }: { write: FileWritten }) {
+  if (write.accepted) {
     return (
       <div className="flex items-center gap-2 px-4 py-1 font-mono text-[11px]">
         <span style={{ color: "var(--color-ide-ok)" }}>✓</span>
-        <span className="text-ide-dim">{path}</span>
+        <span className="text-ide-dim">{write.path}</span>
         <span className="text-ide-faint">
-          written by {agent_id} · {ticket_id}
+          written by {write.agent_id} · {write.ticket_id}
         </span>
-        <span className="ml-auto text-ide-faint">{clock(ts)}</span>
+        <span className="ml-auto text-ide-faint">{clock(write.ts)}</span>
       </div>
     );
   }
@@ -203,11 +189,11 @@ export function FileWrittenRow({
       >
         <div className="flex items-center gap-2 font-mono text-[11px]">
           <span style={{ color: "var(--color-ide-blocking)" }}>✕ write rejected</span>
-          <span className="text-ide-dim">{path}</span>
-          <span className="ml-auto text-ide-faint">{clock(ts)}</span>
+          <span className="text-ide-dim">{write.path}</span>
+          <span className="ml-auto text-ide-faint">{clock(write.ts)}</span>
         </div>
         <p className="mt-1 font-mono text-[11px] leading-relaxed text-ide-dim">
-          {agent_id} · {ticket_id} — {reason}
+          {write.agent_id} · {write.ticket_id} — {write.reason}
         </p>
       </div>
     </div>

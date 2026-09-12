@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { SSEEvent, SSEEventType } from "@/lib/contract";
+import type { SSEEvent, SSEEventType } from "@/lib/types";
 import { initialRoomState, roomReducer, type RoomState } from "@/lib/roomReducer";
-import { fixtureStream } from "@/lib/fixtures/stream";
-import { workspaceFiles } from "@/lib/fixtures/workspace";
+import { fixtureEvents } from "@/lib/fixtures";
+import { workspaceFiles } from "@/lib/workspace";
 import { ChatPanel } from "@/components/ChatPanel";
 import { CodePanel } from "@/components/CodePanel";
 import { SetupModal, type LocalIdentity } from "@/components/SetupModal";
@@ -42,19 +42,13 @@ function seedState(): RoomState {
     files: Object.fromEntries(
       workspaceFiles.map((f) => [
         f.path,
-        {
-          path: f.path,
-          content: f.content,
-          pending_content: f.after,
-          language: f.language,
-          rejected_by: [],
-        },
+        { content: f.content, lastWrittenBy: null, pendingContent: f.after },
       ]),
     ),
   };
 }
 
-/** Join as the local user: the identity is pinned so the stream cannot overwrite it. */
+/** Join as the local user. is_local also pins the identity against the stream. */
 function joinLocal(prev: RoomState, identity: LocalIdentity): RoomState {
   const next = roomReducer(prev, {
     type: "participant_joined",
@@ -65,10 +59,11 @@ function joinLocal(prev: RoomState, identity: LocalIdentity): RoomState {
     model: identity.model,
     display_name: identity.display_name,
   });
-  const p = next.participants[LOCAL_USER_ID];
   return {
     ...next,
-    participants: { ...next.participants, [LOCAL_USER_ID]: { ...p, is_local: true, pinned: true } },
+    participants: next.participants.map((p) =>
+      p.user_id === LOCAL_USER_ID ? { ...p, is_local: true } : p,
+    ),
   };
 }
 
@@ -86,7 +81,7 @@ export default function Room() {
   // The peer has no display_name on the wire, so give them one for the demo.
   const events: SSEEvent[] = useMemo(
     () =>
-      fixtureStream.map((e) =>
+      fixtureEvents.map((e) =>
         e.type === "participant_joined" && e.user_id !== LOCAL_USER_ID
           ? { ...e, display_name: PEER_NAME }
           : e,
@@ -134,12 +129,12 @@ export default function Room() {
     setState(identity ? joinLocal(seedState(), identity) : seedState());
   }
 
-  function approve(user_id: string, approved: boolean) {
+  function approve(userId: string, approved: boolean) {
     apply({
       type: "approval_updated",
       room_id: ROOM_ID,
       ts: new Date().toISOString(),
-      user_id,
+      user_id: userId,
       approved,
     });
     // Approving releases the gate; requesting changes holds the room.
@@ -151,7 +146,7 @@ export default function Room() {
       type: "user_message",
       room_id: ROOM_ID,
       ts: new Date().toISOString(),
-      round: Math.max(state.round, 1),
+      round: Math.max(state.currentRound, 1),
       user_id: LOCAL_USER_ID,
       content,
     });
@@ -181,12 +176,7 @@ export default function Room() {
           <CodePanel state={state} selected={selected} onSelect={setSelected} />
         </div>
         <div className="min-w-0 flex-1">
-          <ChatPanel
-            state={state}
-            onApprove={approve}
-            onSelectFile={setSelected}
-            onSend={send}
-          />
+          <ChatPanel state={state} onApprove={approve} onSelectFile={setSelected} onSend={send} />
         </div>
       </main>
 

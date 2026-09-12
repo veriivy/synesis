@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Provider } from "@/lib/contract";
+import type { Provider } from "@/lib/types";
 
 export const PROVIDER_COLOR: Record<Provider, string> = {
   claude: "#d97757",

@@ -1,4 +1,4 @@
-import type { RoomState } from "@/lib/roomReducer";
+import { type RoomState, localParticipant, participantById } from "@/lib/roomReducer";
 import { Card, CardHeader, clock, Tag } from "@/components/ui";
 
 const K2 = "var(--color-ide-k2)";
@@ -16,12 +16,12 @@ export function PlanCard({
   ts: string;
   onApprove?: (user_id: string, approved: boolean) => void;
 }) {
-  const plan = state.plan;
+  const plan = state.proposedPlan;
   if (!plan) return null;
 
   const voters = Object.keys(plan.approvals);
   const approvedCount = voters.filter((u) => state.approvals[u]).length;
-  const local = Object.values(state.participants).find((p) => p.is_local);
+  const local = localParticipant(state);
   const localPending = local ? !state.approvals[local.user_id] : false;
   const fullyApproved = plan.status === "approved" || (voters.length > 0 && approvedCount === voters.length);
 
@@ -104,7 +104,7 @@ export function PlanCard({
             <div className="flex flex-wrap items-center gap-2">
               {voters.map((u) => {
                 const ok = state.approvals[u];
-                const p = state.participants[u];
+                const p = participantById(state, u);
                 return (
                   <span
                     key={u}

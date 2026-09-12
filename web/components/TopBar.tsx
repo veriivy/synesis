@@ -1,14 +1,13 @@
 "use client";
 
-import type { Phase, RoomState } from "@/lib/roomReducer";
+import type { RoomState, RoomStatus } from "@/lib/roomReducer";
 import { PROVIDER_LABEL, ProviderDot } from "@/components/ui";
 
-const PHASE_LABEL: Record<Phase, string> = {
-  lobby: "lobby",
-  drafting: "drafting plans",
+const STATUS_LABEL: Record<RoomStatus, string> = {
+  setup: "setup",
+  tasks: "tasks",
   negotiating: "negotiating",
   awaiting_approval: "awaiting approval",
-  approved: "approved",
   executing: "executing",
   done: "done",
 };
@@ -49,20 +48,19 @@ export interface Playback {
 }
 
 export function TopBar({ state, playback }: { state: RoomState; playback: Playback }) {
-  const participants = Object.values(state.participants);
 
   return (
     <header className="flex h-10 shrink-0 items-center gap-3 border-b border-ide-border bg-ide-rail px-3">
       <span className="font-mono text-[12px] tracking-widest text-ide-text uppercase">synesis</span>
       <span className="font-mono text-[11px] text-ide-faint">
-        {state.room_id ?? "no room"}
+        {state.roomId || "no room"}
       </span>
       <span className="rounded-sm border border-ide-border px-1.5 py-px font-mono text-[10px] text-ide-dim uppercase">
-        {PHASE_LABEL[state.phase]}
+        {STATUS_LABEL[state.status]}
       </span>
 
       <div className="ml-2 flex items-center gap-1.5">
-        {participants.map((p) => (
+        {state.participants.map((p) => (
           <span
             key={p.user_id}
             title={p.model ? `${p.user_id} · ${p.model}` : p.user_id}
@@ -74,7 +72,7 @@ export function TopBar({ state, playback }: { state: RoomState; playback: Playba
             {p.is_local && <span className="font-mono text-[10px] text-ide-faint">you</span>}
           </span>
         ))}
-        {participants.length === 0 && (
+        {state.participants.length === 0 && (
           <span className="text-[11px] text-ide-faint">no participants yet</span>
         )}
       </div>

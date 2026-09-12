@@ -1,19 +1,9 @@
-import type { PoA } from "@/lib/contract";
-import { type RoomState, userOfAgent } from "@/lib/roomReducer";
+import type { PoA } from "@/lib/types";
+import { type RoomState, participantOfAgent } from "@/lib/roomReducer";
 import { Card, CardHeader, clock, PROVIDER_COLOR, ProviderDot } from "@/components/ui";
 
-export function PoACard({
-  state,
-  agent_id,
-  ts,
-}: {
-  state: RoomState;
-  agent_id: string;
-  ts: string;
-}) {
-  const poa: PoA | undefined = state.poas[agent_id];
-  if (!poa) return null;
-  const owner = userOfAgent(state, agent_id);
+export function PoACard({ state, poa, ts }: { state: RoomState; poa: PoA; ts: string }) {
+  const owner = participantOfAgent(state, poa.agent_id);
   const color = owner?.provider ? PROVIDER_COLOR[owner.provider] : "var(--color-ide-border)";
 
   return (
@@ -25,9 +15,11 @@ export function PoACard({
             plan of action
           </span>
           <span className="font-mono text-[11px]" style={{ color }}>
-            {agent_id}
+            {poa.agent_id}
           </span>
-          <span className="text-[11px] text-ide-faint">for {owner?.display_name ?? poa.user_id}</span>
+          <span className="text-[11px] text-ide-faint">
+            for {owner?.display_name ?? poa.user_id}
+          </span>
           <span className="ml-auto font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
         </CardHeader>
 

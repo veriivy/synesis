@@ -1,5 +1,5 @@
-import type { Ticket } from "@/lib/contract";
-import { type RoomState, userOfAgent } from "@/lib/roomReducer";
+import type { Ticket } from "@/lib/types";
+import { type RoomState, participantOfAgent } from "@/lib/roomReducer";
 import { TICKET_STATUS_COLOR } from "@/components/chat/Messages";
 import { Card, CardHeader, clock, PROVIDER_COLOR, ProviderDot, Tag } from "@/components/ui";
 
@@ -44,7 +44,7 @@ export function TicketsCard({
 
         <ul className="divide-y divide-ide-border">
           {state.tickets.map((t) => {
-            const owner = userOfAgent(state, t.assigned_agent);
+            const owner = participantOfAgent(state, t.assigned_agent);
             const color = owner?.provider ? PROVIDER_COLOR[owner.provider] : undefined;
             return (
               <li key={t.ticket_id} className="px-3 py-2">

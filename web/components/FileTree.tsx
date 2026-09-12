@@ -1,9 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { FileState, RoomState } from "@/lib/roomReducer";
-import { userOfAgent } from "@/lib/roomReducer";
-import { buildTree, type TreeNode } from "@/lib/fixtures/workspace";
+import { type RoomState, participantOfAgent, rejectedWrites } from "@/lib/roomReducer";
+import { buildTree, type TreeNode } from "@/lib/workspace";
 import { PROVIDER_COLOR } from "@/components/ui";
 
 function Chevron({ open }: { open: boolean }) {
@@ -36,10 +35,10 @@ function Row({
   toggle: (path: string) => void;
 }) {
   const isDir = node.type === "dir";
-  const file: FileState | undefined = isDir ? undefined : state.files[node.path];
-  const writer = file?.last_written_by ? userOfAgent(state, file.last_written_by) : undefined;
+  const file = isDir ? undefined : state.files[node.path];
+  const writer = file?.lastWrittenBy ? participantOfAgent(state, file.lastWrittenBy) : undefined;
   const writerColor = writer?.provider ? PROVIDER_COLOR[writer.provider] : undefined;
-  const rejected = file?.rejected_by.length ?? 0;
+  const refused = isDir ? [] : rejectedWrites(state, node.path);
   const isSelected = !isDir && selected === node.path;
 
   return (
@@ -51,22 +50,22 @@ function Row({
           isSelected ? "bg-ide-active text-ide-text" : "text-ide-dim hover:bg-ide-hover"
         }`}
         style={{ paddingLeft: 6 + depth * 12 }}
-        title={file?.last_written_by ? `last written by ${file.last_written_by}` : node.path}
+        title={file?.lastWrittenBy ? `last written by ${file.lastWrittenBy}` : node.path}
       >
         {isDir ? <Chevron open={!!open[node.path]} /> : <span className="w-3 shrink-0" />}
         <span className="truncate">{node.name}</span>
-        {rejected > 0 && (
+        {refused.length > 0 && (
           <span
             className="ml-auto font-mono text-[10px]"
             style={{ color: "var(--color-ide-blocking)" }}
-            title={file?.rejected_by.at(-1)?.reason}
+            title={refused.at(-1)?.reason ?? undefined}
           >
-            ✕{rejected > 1 ? rejected : ""}
+            ✕{refused.length > 1 ? refused.length : ""}
           </span>
         )}
         {writerColor && (
           <span
-            className={`${rejected > 0 ? "ml-1" : "ml-auto"} h-1.5 w-1.5 shrink-0 rounded-full`}
+            className={`${refused.length > 0 ? "ml-1" : "ml-auto"} h-1.5 w-1.5 shrink-0 rounded-full`}
             style={{ background: writerColor }}
           />
         )}
@@ -98,8 +97,7 @@ export function FileTree({
   selected: string | null;
   onSelect: (path: string) => void;
 }) {
-  const paths = Object.keys(state.files).sort();
-  const tree = buildTree(paths);
+  const tree = buildTree(Object.keys(state.files).sort());
   const [closed, setClosed] = useState<Record<string, boolean>>({});
 
   // Directories default to open; `closed` records the ones the reader collapsed.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Provider } from "@/lib/contract";
+import type { Provider } from "@/lib/types";
 import { PROVIDER_COLOR, PROVIDER_LABEL, ProviderDot } from "@/components/ui";
 
 export interface LocalIdentity {

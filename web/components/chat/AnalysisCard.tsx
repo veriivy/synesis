@@ -1,5 +1,5 @@
-import type { Analysis, Difference } from "@/lib/contract";
-import { type RoomState, blockingCount, userOfAgent } from "@/lib/roomReducer";
+import type { Analysis, Difference } from "@/lib/types";
+import { type RoomState, blockingCount, participantOfAgent } from "@/lib/roomReducer";
 import { Card, CardHeader, clock, PROVIDER_COLOR, ProviderDot, Tag } from "@/components/ui";
 
 const K2 = "var(--color-ide-k2)";
@@ -17,7 +17,7 @@ function Position({
   agent_id: string;
   text: string;
 }) {
-  const owner = userOfAgent(state, agent_id);
+  const owner = participantOfAgent(state, agent_id);
   const color = owner?.provider ? PROVIDER_COLOR[owner.provider] : undefined;
   return (
     <div className="flex gap-2">
