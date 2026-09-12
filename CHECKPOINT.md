@@ -9,9 +9,19 @@ drift from what's actually there.
 **Update:** items 2 (merge), 4 (Mongo), and 5 (BYO keys) below are all done —
 `feature/Shawn_orchestrator_backend` was merged into `main` via PR #2. `main`
 was re-verified after the merge: 42/42 tests pass, web lint/build/reducer-check
-all clean. A security review of the branch also ran before/around the merge —
-see the new item at the top of "What's still missing," it found one real,
-unresolved issue worth reading before demo prep continues.
+all clean.
+
+**Update 2:** item 0's security finding is **fixed**, committed directly to
+`main` — `POST /participants` now issues a `participant_token` on first join;
+`/participants` (re-registration), `/tasks`, `/messages`, and `/plan/approve`
+all require it to act as an already-claimed `user_id`. 7 new regression tests
+(`orchestrator/tests/test_participant_auth.py`) cover the exact exploit steps
+from the review — re-verified the literal attack is blocked over a real
+socket too. Web (`useLiveRoom.ts`, `app/live/page.tsx`) updated to carry the
+token through; lint/build/`check:reducer` all still pass. 49/49 backend tests
+pass. Full room lifecycle (create → join → tasks → negotiate → approve →
+tickets → execute) has NOT been re-clicked-through in a browser after this
+change — still item 1 below.
 
 ## Where things stand
 
@@ -32,7 +42,8 @@ unresolved issue worth reading before demo prep continues.
   reaches `agents.draft_poa`/`revise_poa`'s `providers.chat` call, instead of
   always using the server's static `AGENT_A1_PROVIDER`/`AGENT_A2_PROVIDER` +
   env key
-- 42 passing tests; web lint/build/`check:reducer` all clean — both
+- 49 passing tests (42 at merge + 7 more from the participant_token fix,
+  "Update 2" above); web lint/build/`check:reducer` all clean — both
   re-verified against `main` after the merge, not just the feature branch
 
 **Net effect:** the project has gone from "two people have written
@@ -44,24 +55,25 @@ real, with real model calls, and the core judged technical claim
 
 ## What's still missing before this is demo-ready
 
-0. **Security finding, unresolved: participant/task/message identity
-   spoofing enables BYO-key hijack.** `POST /participants`, `/tasks`, and
-   `/messages` all trust a client-supplied `user_id` with no ownership
-   check — a second `POST /participants` with `user_id: "u1"` silently
-   overwrites the real u1's stored `provider`/`api_key`. Because BYO keys
-   are now wired in (item 5 below), this has a real, live consequence:
-   whoever knows the `room_id` (routinely shared as `?room=<id>`) can
-   redirect u1's agent's real LLM calls — carrying the full negotiation
-   transcript — to a provider account they control, mid-negotiation, no
-   race condition needed. Confirmed via an independent second-pass review
-   (confidence 8/10), distinct from "the whole app has no login system"
-   (that framing was checked too and rejected as the actual issue — see the
-   session transcript's security-review turn for the full reasoning). Fix:
-   issue a per-participant token at first join, require it on subsequent
-   calls for that `user_id`, reject re-registration without it. Worth
-   fixing before any demo that uses real BYO keys; lower priority if the
-   demo runs entirely on server-side keys with the fixture-fallback path.
-1. **Nobody's clicked through it in a browser yet.** Everything above is
+0. **Security finding — fixed.** ✅ `POST /participants`, `/tasks`,
+   `/messages`, `/plan/approve` used to trust a client-supplied `user_id`
+   with no ownership check — anyone who knew a `room_id` could re-register
+   an existing `user_id` and, once BYO keys were wired in, hijack their
+   real LLM calls (redirecting billed traffic + the full negotiation
+   transcript to an attacker-controlled provider account), or spoof their
+   tasks/messages/approval. Fixed via `participant_token`: issued by
+   `POST /participants` on first join, required on every subsequent call
+   acting as that `user_id` (`orchestrator/main.py`'s `_check_owner`).
+   Regression tests for the exact exploit steps in
+   `tests/test_participant_auth.py`; re-verified blocked over a real
+   socket. Known residual scope, not fixed: a `user_id` that's never
+   joined via `/participants` stays unprotected on `/tasks`/`/messages`
+   (nothing to steal yet — this keeps the fixture-fallback demo path
+   working) — someone could pre-seed bogus tasks under a `user_id` before
+   the real person joins, though it'd be overwritten the moment they
+   submit their own. Lower severity than the fixed issue; not addressed.
+1. **Nobody's clicked through it in a browser yet — including after the
+   participant_token fix above.** Everything above is
    verified via curl/pytest, not by opening `/live` and watching two rounds
    of negotiation render. This is the highest-priority *usability* next
    step — do it before anything else, because UI bugs (a card that doesn't
@@ -102,26 +114,24 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
 "8am–11am: wire providers, confirm K2" milestone — the merge above basically
 *is* that checkpoint, done a bit more thoroughly. Next:
 
-1. **Decide on the identity-spoofing fix** (item 0 above) — at minimum,
-   decide whether the demo avoids the exposure entirely by not using real
-   BYO keys, or whether it's worth a quick token check before relying on
-   BYO keys live.
-2. **Click through `/live` in a real browser**, both users' worth of it,
-   watch for anything that renders wrong. Fix what you find.
-3. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
+1. **Click through `/live` in a real browser**, both users' worth of it,
+   watch for anything that renders wrong — including that the
+   participant_token plumbing (item 0) didn't break the join/task/approve
+   flow, which hasn't been browser-tested yet, only curl/pytest.
+2. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
    scenario is already proven to work end to end. Decide now whether the
    live demo runs on real model calls or falls back to the pre-recorded
    fixture stream if a provider hiccups mid-pitch — and rehearse the
    fallback, since "the screen never sits still" is a stated hard
    requirement.
-4. **10am–1pm mentor office hours** — go with a specific blocker, not "is
+3. **10am–1pm mentor office hours** — go with a specific blocker, not "is
    this good." Good candidates: whether it's worth spending demo setup time
    on a real Atlas URI given Mongo is now wired but unverified against a
    real cluster, or whether the Sandia framing (capability-scoped writes,
    untrusted agents) lands well as a pitch point.
-5. **1pm hard freeze, record the backup video** while everything still
+4. **1pm hard freeze, record the backup video** while everything still
    works.
-6. **2–3pm rehearse the 3-minute pitch**, out loud, on venue wifi —
+5. **2–3pm rehearse the 3-minute pitch**, out loud, on venue wifi —
    specifically the moment CLAUDE.md flags: *showing a write getting
    rejected*. That's now real and testable (`orchestrator/tests/test_execution.py`),
    so rehearse actually triggering it, not just asserting it in a test.

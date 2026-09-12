@@ -80,7 +80,10 @@ function LiveRoomBody({
     await fetch(`${ORCHESTRATOR_URL}/rooms/${roomId}/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: "u1", tasks }),
+      // participant_token: required now that the orchestrator checks
+      // ownership of a user_id (see orchestrator/main.py's _check_owner) —
+      // without it this 403s instead of registering u1's tasks.
+      body: JSON.stringify({ user_id: "u1", tasks, participant_token: room.participantToken }),
     });
     await fetch(`${ORCHESTRATOR_URL}/rooms/${roomId}/negotiate`, { method: "POST" });
     onTasksSubmitted();
