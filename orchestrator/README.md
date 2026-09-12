@@ -34,6 +34,11 @@ fail and report a clean `error` event over SSE rather than hang or crash
 — verified manually against a running instance (`curl -N` on
 `/rooms/{id}/stream`).
 
+`MONGODB_URI` is also optional — unset, every room stays in-memory only,
+same as before this was added. Set it (an Atlas `mongodb+srv://...`
+connection string) to get durable persistence; see "What's real" below
+for exactly what that does and doesn't cover.
+
 ## The full sequence
 
 ```
@@ -87,6 +92,21 @@ resolution rather than a fabricated one.
   `tests/test_execution.py`, not staged as a demo moment.
 - `ticketing.py`'s JSON-repair retry, matching the pattern `k2.analyze`
   already uses (one retry, then let it fail loudly).
+- BYO keys (`db.py`'s sibling feature, `_agent_provider_and_key` in
+  `main.py`): if the participant who owns an agent joined with their own
+  `provider` + `api_key`, that's what `draft_poa`/`revise_poa` call
+  `providers.chat` with — not the static `AGENT_A1_PROVIDER`/
+  `AGENT_A2_PROVIDER` env default. `Participant.api_key` is excluded from
+  `model_dump()` (`Field(exclude=True)`), so it can never end up in an SSE
+  event or a Mongo snapshot — see `tests/test_rooms.py`'s
+  `test_snapshot_never_includes_an_api_key`.
+- Mongo persistence (`db.py`): every SSE event is durably recorded (the
+  "transcript"), and a room snapshot is saved at each milestone
+  (`room_snapshot` in `rooms.py`). Optional — unset `MONGODB_URI`, and
+  every function in `db.py` is a no-op, checked directly in
+  `tests/test_db.py`. **Not covered by an integration test against a real
+  Atlas cluster** — none was available in this environment; only the
+  no-URI no-op path and the snapshot's own shape/exclusions are tested.
 
 **Real, but a deliberate stand-in:**
 - Ticket execution writes placeholder content
@@ -101,8 +121,10 @@ resolution rather than a fabricated one.
   that the way a deterministic template could force.
 
 **Not built at all:**
-- Mongo persistence — `rooms.py` is in-memory, single-process state on
-  module-level globals (`main.rooms`, `main.bus`), gone on restart.
+- Resuming an in-progress negotiation after a restart — Mongo persists a
+  durable record, but the asyncio.Task actually driving a room's round
+  loop is still gone the moment the process is. See `db.py`'s module
+  docstring.
 - Multi-browser rooms — `web/app/live` assumes one real browser as u1 and
   seeds a fixed demo participant as u2.
 - Everything CLAUDE.md's roadmap already marks as future work.
@@ -112,21 +134,27 @@ resolution rather than a fabricated one.
 ```
 orchestrator/
   __init__.py
-  providers.py    one chat() for Claude/GPT/Gemini/IFM, provider resolution + fallback
+  providers.py    one chat() for Claude/GPT/Gemini/IFM, provider resolution + fallback,
+                   BYO api_key override, provider_key_for (self-reported name -> registry key)
   k2.py           K2's per-round structural diff (analyze) + extract_object
   agents.py       draft_poa (opening) / revise_poa (per-round) for a1/a2
-  events.py       EventBus: per-room dict-event log + SSE fan-out
-  rooms.py        Room / RoomStore (in-memory)
+  events.py       EventBus: per-room dict-event log + SSE fan-out + db.record_event hook
+  rooms.py        Room / RoomStore (in-memory) + room_snapshot (-> db.save_room)
   schemas.py      FinalPlan/Ticket/Step/... — typed, for validator.py + ticketing.py
   workspace.py    seeded demo repo, mirrors web/lib/workspace.ts
   validator.py    the disjoint-file-ownership guarantee
   ticketing.py    plan -> tickets, K2 call + validator
   execution.py    write_file enforcement + the simulated ticket executor
+  db.py           MongoDB Atlas persistence, optional, no-ops without MONGODB_URI
   main.py         the FastAPI app — every endpoint in the frozen contract
   tests/
     test_validator.py     pure, no model calls
     test_ticketing.py     scripted fake chat_fn, no network
     test_execution.py     write_file + execute_room in isolation
+    test_rooms.py         room_snapshot's shape and its api_key exclusion
+    test_db.py            db.py's no-op behavior without MONGODB_URI
+    test_byo_keys.py      provider_key_for/resolve, and that a participant's
+                           own provider+key actually reaches draft_poa
     test_end_to_end.py    full room lifecycle through the real app, LLM
                            calls faked at the names main.py imported them
                            under, everything else (ticketing, validator,

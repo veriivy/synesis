@@ -6,6 +6,14 @@ tasking/ticketing/execution slice built on `feature/Shawn_orchestrator_backend`)
 into one. Read this before picking up more work so effort doesn't duplicate or
 drift from what's actually there.
 
+**Update, same branch, teammates asleep:** items 4 (Mongo) and 5 (BYO keys)
+below are now done — see their sections for what that does and doesn't cover.
+Item 2 (merge the PR) is **still not done** and needs a human: Claude Code's
+own auto-mode safety classifier refused the merge command outright ("Merge
+Without Review") when asked to do it unattended. That's a deliberate guardrail
+this session isn't overriding — merge via GitHub's UI, or locally, when
+someone's actually looking at the diff.
+
 ## Where things stand
 
 **On `main` (merged, working):**
@@ -20,7 +28,15 @@ drift from what's actually there.
   decomposition, `write_file` enforcement, execution
 - `web/app/live` — a real page that talks to the real backend over SSE, not
   fixtures
-- 28 passing tests, verified manually end-to-end over a real socket
+- MongoDB Atlas persistence (`orchestrator/db.py`) — every SSE event durably
+  recorded, a room snapshot saved at each milestone, entirely optional
+  (no-ops without `MONGODB_URI`)
+- BYO provider keys actually threaded through (`main._agent_provider_and_key`)
+  — a participant's own `provider` + `api_key` from `POST /participants` now
+  reaches `agents.draft_poa`/`revise_poa`'s `providers.chat` call, instead of
+  always using the server's static `AGENT_A1_PROVIDER`/`AGENT_A2_PROVIDER` +
+  env key
+- 42 passing tests, verified manually end-to-end over a real socket
 
 **Net effect:** the project has gone from "two people have written
 negotiation logic, nobody has a runnable product" to one merge away from a
@@ -38,20 +54,36 @@ and tested.
    `poa_generated` correctly, a state transition that never fires) are
    exactly what automated tests won't catch and what the judges will
    actually see.
-2. **The PR isn't merged.** It's a big diff (two orchestrators became one) —
-   get eyes on it and merge before more work stacks on top of `main` and
-   creates a third divergence.
+2. **The PR still isn't merged — needs a human.** Claude Code's auto-mode
+   safety classifier blocked an unattended `git merge` outright ("Merge
+   Without Review"). Merge it via GitHub's UI (link in the PR), or locally
+   after actually reading the diff. Nothing else in this list can safely
+   build further on `main` until this happens without risking a third
+   divergence.
 3. **No real multi-browser room.** `/live` hardcodes a fixed demo peer for
    u2. Fine for a solo click-through; not fine for "two developers,
    incompatible assumptions" as an actual live demo unless one person plays
    both parts convincingly.
-4. **Mongo isn't wired.** Rooms are in-memory globals — a server restart
-   loses everything. Low risk for a demo (one process, one sitting) but
-   worth knowing before anyone restarts the server mid-rehearsal.
-5. **BYO keys aren't threaded through `/live`'s participant join** —
-   `api_key` is collected by `SetupModal` and sent to `/participants`, but
-   nothing in the backend currently reads a per-participant key instead of
-   the server's env key for that user's provider calls.
+4. **Mongo is wired.** ✅ `orchestrator/db.py`: every SSE event is durably
+   recorded, room snapshots save at each milestone (created, plan_proposed,
+   tickets_created, execution finished). Still optional — no `MONGODB_URI`
+   set anywhere yet, so it's currently running exactly as before (in-memory
+   only) until someone pastes a real Atlas connection string into `.env`.
+   **Not verified against a real cluster** — no credentials were available
+   in this environment; only the no-URI no-op path and the snapshot's shape
+   are tested (`tests/test_db.py`, `tests/test_rooms.py`). Get an Atlas URI
+   and actually run a room against it before trusting this in the demo.
+5. **BYO keys are threaded through.** ✅ A participant's `provider` +
+   `api_key` from `POST /participants` now determines which real provider
+   serves their agent (`main._agent_provider_and_key`), overriding the
+   static `AGENT_A1_PROVIDER`/`AGENT_A2_PROVIDER` env default when there's a
+   participant to resolve it from. `api_key` still never appears in an SSE
+   event or a Mongo snapshot (`Participant.api_key`'s `Field(exclude=True)`,
+   checked directly in `tests/test_rooms.py`). Covered by
+   `tests/test_byo_keys.py`, including an end-to-end check that the right
+   provider+key actually reaches `draft_poa`. **Not tested against a real
+   pasted key hitting a real API** — the test suite fakes the call, same as
+   everything else in this repo that would otherwise need a live key.
 
 ## Suggested order of operations from here
 
@@ -59,7 +91,7 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
 "8am–11am: wire providers, confirm K2" milestone — the merge above basically
 *is* that checkpoint, done a bit more thoroughly. Next:
 
-1. **Merge the PR.**
+1. **Merge the PR** (needs a human — see item 2 above).
 2. **Click through `/live` in a real browser**, both users' worth of it,
    watch for anything that renders wrong. Fix what you find.
 3. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
@@ -69,9 +101,10 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
    fallback, since "the screen never sits still" is a stated hard
    requirement.
 4. **10am–1pm mentor office hours** — go with a specific blocker, not "is
-   this good." Good candidates: BYO-key wiring, or whether the Sandia
-   framing (capability-scoped writes, untrusted agents) lands well as a
-   pitch point.
+   this good." Good candidates: whether it's worth spending demo setup time
+   on a real Atlas URI given Mongo is now wired but unverified against a
+   real cluster, or whether the Sandia framing (capability-scoped writes,
+   untrusted agents) lands well as a pitch point.
 5. **1pm hard freeze, record the backup video** while everything still
    works.
 6. **2–3pm rehearse the 3-minute pitch**, out loud, on venue wifi —
