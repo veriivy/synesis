@@ -1,18 +1,23 @@
+"use client";
+
 /**
  * Three panes: the negotiation, the plan, the writes.
  *
  * The layout is the pitch. Left is the argument, middle is what they agreed and the
  * approval gate, right is code landing in owned files with rejections in red.
+ *
+ * The whole page is a client component — it holds the SSE connection and the event
+ * log, so there is nothing here a server render could usefully produce.
  */
 
 import { useMemo, useState } from "react";
-import { approvePlan, createRoom, postIntent } from "./api";
-import Intake from "./components/Intake";
-import PlanPanel from "./components/PlanPanel";
-import Transcript from "./components/Transcript";
-import WriteLog from "./components/WriteLog";
-import { useRoomStream } from "./useRoomStream";
-import type { Phase, Requirement, UnresolvedIssue } from "./types";
+import { approvePlan, createRoom, postIntent } from "@/lib/api";
+import Intake from "@/components/Intake";
+import PlanPanel from "@/components/PlanPanel";
+import Transcript from "@/components/Transcript";
+import WriteLog from "@/components/WriteLog";
+import { useRoomStream } from "@/lib/useRoomStream";
+import type { Phase, Requirement, UnresolvedIssue } from "@/lib/types";
 
 type Participant = {
   user_id: string;
@@ -31,7 +36,7 @@ const PHASE_COPY: Record<Phase, string> = {
   rejected: "plan rejected",
 };
 
-export default function App() {
+export default function Page() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +100,7 @@ export default function App() {
   const streamErrors = events.filter((e) => e.type === "error");
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-screen flex-col">
       <header className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-5 py-3">
         <h1 className="text-sm font-semibold tracking-tight text-slate-100">Synesis</h1>
         <span className="font-mono text-xs text-slate-600">{roomId}</span>

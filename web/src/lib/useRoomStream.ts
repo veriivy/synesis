@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Subscribes to a room's SSE stream and accumulates events.
  *
@@ -6,6 +8,10 @@
  *     already on screen. Events are keyed and deduped.
  *   - EventSource reconnects on its own, but a dead backend should be visible in the
  *     UI rather than looking like agents that went quiet.
+ *
+ * EventSource is browser-only, so this module is a client module. It runs inside
+ * useEffect, which never executes during server rendering — but the directive keeps
+ * that guarantee local to this file instead of depending on every caller.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";

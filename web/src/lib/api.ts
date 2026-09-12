@@ -2,7 +2,15 @@
 
 import type { FileEntry, Requirement, RoomSummary } from "./types";
 
-const BASE = import.meta.env.VITE_API_BASE ?? "/api";
+/**
+ * The backend's address. Must be absolute — we talk to the Python server directly
+ * rather than proxying through Next, so that the SSE stream isn't buffered by a
+ * rewrite. See the note in next.config.ts.
+ *
+ * NEXT_PUBLIC_ is not decoration: only variables with that prefix are readable in the
+ * browser. Rename it and the value silently becomes undefined at runtime.
+ */
+const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {

@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Room creation and requirement intake.
  *
@@ -7,9 +9,9 @@
  */
 
 import { useState } from "react";
-import { DEMO_INTENTS } from "../demoIntents";
-import type { Priority, Requirement } from "../types";
-import { agentStyle } from "../types";
+import { DEMO_INTENTS } from "@/lib/demoIntents";
+import type { Priority, Requirement } from "@/lib/types";
+import { agentStyle } from "@/lib/types";
 
 interface Props {
   onStart: (
@@ -96,11 +98,12 @@ export default function Intake({ onStart, busy, error }: Props) {
         </button>
       </header>
 
-      <label className="mb-8 block">
+      <label className="mb-8 block" htmlFor="feature">
         <span className="mb-2 block text-xs font-semibold uppercase tracking-widest text-slate-500">
           The feature
         </span>
         <input
+          id="feature"
           value={feature}
           onChange={(e) => setFeature(e.target.value)}
           placeholder="Add user authentication to the notes API…"
@@ -119,6 +122,7 @@ export default function Intake({ onStart, busy, error }: Props) {
               <header className="mb-3 flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${style.dot}`} />
                 <input
+                  id={`name-${draft.user_id}`}
                   value={draft.display_name}
                   onChange={(e) => update(di, { display_name: e.target.value })}
                   placeholder={`User ${draft.user_id}`}
@@ -135,6 +139,7 @@ export default function Intake({ onStart, busy, error }: Props) {
                         {requirement.req_id}
                       </code>
                       <select
+                        id={`priority-${draft.user_id}-${ri}`}
                         value={requirement.priority}
                         onChange={(e) =>
                           setRequirement(di, ri, {
@@ -152,6 +157,7 @@ export default function Intake({ onStart, busy, error }: Props) {
                       </select>
                     </div>
                     <textarea
+                      id={`text-${draft.user_id}-${ri}`}
                       value={requirement.text}
                       onChange={(e) => setRequirement(di, ri, { text: e.target.value })}
                       rows={2}

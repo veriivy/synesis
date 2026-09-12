@@ -32,4 +32,7 @@ Start-Process powershell -ArgumentList @(
 )
 
 Write-Host "api  -> http://localhost:8000/health"
-Write-Host "web  -> http://localhost:5173"
+Write-Host "web  -> http://localhost:3000"
+Write-Host ""
+Write-Host "The web app calls the API directly, so http://localhost:3000 must be in"
+Write-Host "CORS_ORIGINS in .env. It is by default."

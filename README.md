@@ -19,7 +19,7 @@ feature.**
 ```
 /engine     negotiation engine, agent runtime, provider clients   Python   (Audrey)
 /server     FastAPI, SSE, MongoDB, git operations, repo mapping   Python   (Teammate 2)
-/web        React + Vite + Tailwind frontend                      TS       (Teammate 1)
+/web        Next.js (App Router) + Tailwind frontend              TS       (Teammate 1)
 /fixtures   the frozen contract, as data — shared, by agreement only
 /scripts    setup and dev runners
 ```
@@ -67,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File scripts\dev.ps1 -Replay  # replay, no A
 ```
 
 - api → http://localhost:8000/health
-- web → http://localhost:5173
+- web → http://localhost:3000
 
 ### Tests
 
@@ -76,6 +76,18 @@ cd engine;  ..\.venv\Scripts\python.exe -m pytest -q
 cd server;  ..\.venv\Scripts\python.exe -m pytest -q
 cd web;     npm run typecheck
 ```
+
+### How the frontend reaches the backend
+
+The browser calls the Python server **directly** at `NEXT_PUBLIC_API_BASE` (default
+`http://localhost:8000`) — there is no Next rewrite in front of it. A rewrite would be
+tidier, but the whole app hangs off one long-lived SSE connection, and proxying SSE
+through Next's rewrites is a well-known source of buffered-until-it-isn't behaviour:
+events arrive in a clump instead of live, which is precisely what the demo is showing.
+
+The cost of going direct is CORS. **The frontend's origin must be in `CORS_ORIGINS`**
+or every request fails in the browser console. `http://localhost:3000` is there by
+default; add the Vercel URL after you deploy.
 
 ---
 
@@ -95,6 +107,29 @@ requirement list**, where each requirement is `must-have` or `nice-to-have`.
    `{converged, premature, conflicts_remaining}`.
 4. On convergence the moderator emits the workplan. On the round cap with conflicts
    still open, a `deadlock` event escalates both positions to the humans.
+
+### The moderator is K2, and that is on purpose
+
+`MODERATOR_PROVIDER=ifm`. The referee is deliberately a provider that is **not
+arguing**. Claude advocates for u1, GPT advocates for u2, and a third model with no
+stake decides whether the round settled anything. Having Claude both advocate and
+referee is a conflict of interest sitting in plain sight, and it is the kind of thing a
+judge asks about. It also earns the IFM prize with a role the system genuinely needs,
+rather than a fifth agent added for the logo.
+
+K2 does **not** need to be in `ENABLED_AGENTS` — the moderator client is built
+independently. It only needs `IFM_API_KEY`.
+
+**The risk to watch while testing.** The moderator has two jobs of very different
+difficulty. Judging a round returns a small object, and a mangled reply costs one round
+because [`jsonx.py`](engine/engine/jsonx.py) recovers what it can and a failed verdict
+reads as "not converged". But **synthesising the workplan** returns the largest
+structured output in the system — tasks, file ownership, signatures, concessions — and
+if that fails validation the run deadlocks. Run `engine.cli negotiate` and check that a
+valid plan actually comes out. If plan synthesis is what breaks, split the role: K2
+judges the rounds, the strongest model writes the plan. That is about ten lines in
+[`moderator.py`](engine/engine/moderator.py) — give `Moderator` a second client. Do not
+build it before you have measured that you need it.
 
 Agents in a round run **concurrently** and cannot see each other's message from that
 same round — otherwise whoever spoke last would simply agree with whoever spoke first.
@@ -159,8 +194,9 @@ the backend sends.
 
 ### Building the frontend without the backend
 
-`/web` renders from `/fixtures`, so it never blocks on the server. And the server can
-replay the whole demo from a recorded stream, with no API keys and no latency:
+`/web` runs entirely on its own — `cd web && npm run dev`, and you never think about
+Python. And the server can replay the whole demo from a recorded stream, with no API
+keys and no latency:
 
 ```bash
 REPLAY_FIXTURE=fixtures/stream.jsonl uvicorn server.main:app --reload   # from server/
@@ -191,10 +227,13 @@ Everything that can fail at 3am fails soft:
 
 Both halves, in the first two hours. Teams that deploy at hour 22 don't demo.
 
-- **frontend → Vercel.** Root directory `web`. Set `VITE_API_BASE` to the backend URL.
+- **frontend → Vercel.** Root directory `web`; Vercel detects Next.js on its own. Set
+  `NEXT_PUBLIC_API_BASE` to the backend's public URL in Vercel's environment settings —
+  it is baked in at build time, so changing it needs a redeploy, not just a restart.
 - **backend → Vultr** (MLH prize). `uvicorn server.main:app --host 0.0.0.0 --port 8000`.
-  Add the Vercel origin to `CORS_ORIGINS`. If you put nginx in front, SSE needs
-  `proxy_buffering off` — the server already sends `X-Accel-Buffering: no`.
+  **Add the Vercel origin to `CORS_ORIGINS`** or the deployed frontend cannot talk to it
+  at all. If you put nginx in front, SSE needs `proxy_buffering off` — the server already
+  sends `X-Accel-Buffering: no`.
 - **MongoDB Atlas** (MLH prize) — set `MONGODB_URI`. Optional at runtime by design.
 
 ## Cut order, decided in advance

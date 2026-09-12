@@ -20,5 +20,8 @@ trap 'kill 0' EXIT
 (cd web && npm run dev) &
 
 echo "api  -> http://localhost:8000/health"
-echo "web  -> http://localhost:5173"
+echo "web  -> http://localhost:3000"
+echo
+echo "The web app calls the API directly, so http://localhost:3000 must be in"
+echo "CORS_ORIGINS in .env. It is by default."
 wait

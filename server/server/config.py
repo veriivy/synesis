@@ -37,7 +37,10 @@ class ServerSettings:
         return cls(
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8000")),
-            cors_origins=_split("CORS_ORIGINS", "http://localhost:5173"),
+            # Next's dev server is on 3000. The frontend calls this API directly
+            # rather than proxying, so its origin must be listed here or every
+            # request fails in the browser with a CORS error.
+            cors_origins=_split("CORS_ORIGINS", "http://localhost:3000"),
             workspace_root=workspace_root,
             target_repo_url=os.getenv("TARGET_REPO_URL", "").strip(),
             target_repo_ref=os.getenv("TARGET_REPO_REF", "main").strip() or "main",

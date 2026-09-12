@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * The workplan and the approval gate.
  *
@@ -7,8 +9,8 @@
  */
 
 import { useState } from "react";
-import { agentStyle } from "../types";
-import type { UnresolvedIssue, Workplan } from "../types";
+import { agentStyle } from "@/lib/types";
+import type { UnresolvedIssue, Workplan } from "@/lib/types";
 
 interface Props {
   plan: Workplan | null;
@@ -37,8 +39,8 @@ function Deadlock({ issues }: { issues: UnresolvedIssue[] }) {
       </h3>
       <p className="mb-4 text-xs leading-relaxed text-amber-100/70">
         Two must-have requirements are irreconcilable, and neither agent is permitted to
-        concede one on its user's behalf. This is a correct outcome: the disagreement
-        surfaced now, in a paragraph, rather than at merge time in a diff.
+        concede one on its user&apos;s behalf. This is a correct outcome: the
+        disagreement surfaced now, in a paragraph, rather than at merge time in a diff.
       </p>
       {issues.map((issue, i) => (
         <div key={i} className="mb-3 last:mb-0">
@@ -191,6 +193,7 @@ export default function PlanPanel({ plan, deadlock, phase, onApprove, busy }: Pr
             every write while this plan is unapproved.
           </p>
           <input
+            id="approval-notes"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Notes (optional)"

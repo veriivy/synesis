@@ -34,7 +34,7 @@ disagreeing, the product has failed. Conflict is the feature.
 ```
 /engine     — negotiation engine, agent runtime, provider clients  (Python)
 /server     — FastAPI, SSE, MongoDB, git operations, repo mapping  (Python)
-/web        — React + Vite + Tailwind frontend                     (TypeScript)
+/web        — Next.js (App Router) + Tailwind frontend             (TypeScript)
 /fixtures   — shared contract samples (see below)
 CLAUDE.md
 .env.example
@@ -153,8 +153,20 @@ requirement list. Each requirement is tagged `must-have` or `nice-to-have`.
 2. **Rounds 1..N (N = 3, hard cap).** Each agent sees all prior messages and must, for
    every conflicting requirement, do exactly one of: concede, hold with a stated
    reason, or propose a compromise. Vague agreement is not a valid move.
-3. **Moderator agent** runs after each round and emits
+3. **Moderator agent — K2 (IFM)** runs after each round and emits
    `{ conflicts_remaining: [...], converged: bool }`.
+
+   The moderator is deliberately a provider that is **not** arguing. If Claude both
+   advocates for u1 and referees the argument, that is a conflict of interest, and it
+   is the kind of thing a judge asks about. The referee is not one of the players.
+   Set by `MODERATOR_PROVIDER=ifm`; K2 does not need to be in `ENABLED_AGENTS`.
+
+   **Watch this during testing.** The moderator has two jobs of very different
+   difficulty: judging a round returns a small object, but synthesising the workplan
+   returns the largest structured output in the system. A malformed verdict costs one
+   round; a malformed plan deadlocks the run. If plan synthesis proves unreliable on
+   K2, split the role — K2 judges rounds, the strongest model writes the plan. That is
+   roughly ten lines in `moderator.py`. Do not build it before measuring.
 4. On convergence (or at the round cap with conflicts resolved), the moderator emits
    the workplan JSON.
 5. On round cap **with** conflicts remaining, emit a `deadlock` event with each side's
@@ -193,7 +205,10 @@ One git commit per agent per task, authored as that agent.
 
 - Backend: Python + FastAPI. SSE for streaming. Git via `subprocess`.
 - Persistence: **MongoDB Atlas** (rooms, transcripts, workplans) — MLH prize.
-- Frontend: React + Vite + Tailwind. Deployed to Vercel.
+- Frontend: **Next.js (App Router)** + React + Tailwind. Deployed to Vercel.
+  The browser calls the API directly at `NEXT_PUBLIC_API_BASE` rather than through a
+  Next rewrite — proxying SSE through a rewrite buffers the stream, and a live stream
+  is the thing the demo is showing. CORS covers it.
 - Backend deploy: **Vultr** — MLH prize.
 - Built using **Cursor** — Cursor prize.
 - Windows dev machine: run under WSL if git/subprocess behaviour gets strange.
@@ -204,7 +219,7 @@ One git commit per agent per task, authored as that agent.
 
 | Prize | What it takes |
 |---|---|
-| IFM | K2 as one negotiating agent |
+| IFM | **K2 as the moderator** — a real, load-bearing role, not a fifth agent bolted on |
 | MLH Gemini | Gemini as one negotiating agent |
 | MLH MongoDB Atlas | persistence layer (needed anyway) |
 | MLH Vultr | backend deploy target |

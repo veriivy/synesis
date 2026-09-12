@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Writes and commits, live.
  *
@@ -6,8 +8,8 @@
  * flash, the rule that fired, and the full reason. Do not make them quieter.
  */
 
-import { agentStyle } from "../types";
-import type { SynesisEvent } from "../types";
+import { agentStyle } from "@/lib/types";
+import type { SynesisEvent } from "@/lib/types";
 
 interface Props {
   events: SynesisEvent[];

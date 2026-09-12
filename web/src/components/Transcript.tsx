@@ -1,8 +1,10 @@
+"use client";
+
 /** The negotiation, grouped by round. The centre of the demo's first 80 seconds. */
 
 import { useEffect, useRef } from "react";
-import { agentStyle } from "../types";
-import type { SynesisEvent } from "../types";
+import { agentStyle } from "@/lib/types";
+import type { SynesisEvent } from "@/lib/types";
 
 interface Props {
   events: SynesisEvent[];
