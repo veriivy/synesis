@@ -9,6 +9,8 @@ around it.
 
 from __future__ import annotations
 
+import json
+
 from ..jsonx import ChatProvider, call_model_json
 from ..schemas import FinalPlan, Ticket
 from .validator import Adjustment, EmptyFilesOwnedError, validate_and_fix_tickets
@@ -32,11 +34,28 @@ ticket finishes. Do not let two tickets claim the same file unless you intend on
 depend on the other."""
 
 
-def _build_user_prompt(plan: FinalPlan) -> str:
+def _build_user_prompt(plan: FinalPlan, step_owner: dict[str, str] | None) -> str:
     lines = [f"Plan summary: {plan.summary}", "Steps:"]
     for step in plan.steps:
         files = ", ".join(step.files_touched) or "unspecified"
         lines.append(f"- {step.step_id}: {step.title} — {step.description} (files: {files})")
+    # CONTEXT_JSON: structured mirror of the above, for the template
+    # provider (providers/templating.py:TemplateTicketingProvider) to parse
+    # without needing to understand English. Real providers read the lines
+    # above and ignore this block.
+    context = {
+        "steps": [
+            {
+                "step_id": s.step_id,
+                "title": s.title,
+                "files_touched": s.files_touched,
+                "owner": (step_owner or {}).get(s.step_id),
+            }
+            for s in plan.steps
+        ]
+    }
+    lines.append("CONTEXT_JSON: " + json.dumps(context))
+    lines.append("END_CONTEXT_JSON")
     return "\n".join(lines)
 
 
@@ -56,13 +75,18 @@ async def decompose_plan_to_tickets(
     model: str,
     api_key: str | None = None,
     max_regenerations: int = 1,
+    step_owner: dict[str, str] | None = None,
 ) -> tuple[list[Ticket], list[Adjustment]]:
     """Ask K2 to break `plan` into tickets, then run the code-level
     disjointness validator. If K2 leaves a ticket with no files_owned,
     reject and ask it to regenerate (bounded by max_regenerations) instead
     of guessing ownership on its behalf.
+
+    `step_owner` (step_id -> agent_id) is optional context for the template
+    provider, which has no way to infer authorship from prose; a real model
+    can usually infer it from the plan summary/rationale alone.
     """
-    messages = [{"role": "user", "content": _build_user_prompt(plan)}]
+    messages = [{"role": "user", "content": _build_user_prompt(plan, step_owner)}]
 
     for attempt in range(max_regenerations + 1):
         raw_tickets = await call_model_json(
