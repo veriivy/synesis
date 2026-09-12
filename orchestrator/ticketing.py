@@ -16,27 +16,10 @@ from .providers import chat, moderator_provider
 from .schemas import FinalPlan, Ticket
 from .validator import Adjustment, EmptyFilesOwnedError, validate_and_fix_tickets
 
-K2_TICKETING_SYSTEM = """You are K2, moderating a shared coding session between two AI \
-agents. You are given an approved FinalPlan's steps. Decompose them into tickets, one \
-or more per step, so the two agents can execute as much as possible in parallel.
-
-Return ONLY a JSON object, no markdown:
-{"tickets": [
-  {
-    "ticket_id": "t1",
-    "title": "...",
-    "description": "...",
-    "assigned_agent": "a1",
-    "files_owned": ["path/to/file.py"],
-    "lane": "parallel",
-    "depends_on": []
-  }
-]}
-
-Every ticket MUST own at least one file — never return an empty files_owned. Prefer \
-"parallel"; only mark a ticket "sequential" if it genuinely cannot start until another \
-ticket finishes. Do not let two tickets claim the same file unless you intend one to \
-depend on the other."""
+K2_TICKETING_SYSTEM = """You decompose an approved plan into tickets for agents a1 and a2.
+Reply with ONE JSON object. First character is {. No markdown. No English.
+{"tickets":[{"ticket_id":"t1","title":"...","description":"...","assigned_agent":"a1","files_owned":["src/a.py"],"lane":"parallel","depends_on":[]}]}
+Rules: every ticket owns >=1 file; assigned_agent is a1 or a2; prefer parallel; sequential + depends_on only if the same file must wait. At most 8 tickets. Short strings."""
 
 
 @dataclass
@@ -46,24 +29,93 @@ class TicketingResult:
 
 
 def _build_user_prompt(plan: FinalPlan, step_owner: dict[str, str] | None) -> str:
-    lines = [f"Plan summary: {plan.summary}", "Steps:"]
-    for step in plan.steps:
-        files = ", ".join(step.files_touched) or "unspecified"
-        owner = (step_owner or {}).get(step.step_id)
-        owner_note = f", proposed by {owner}" if owner else ""
-        lines.append(
-            f"- {step.step_id}: {step.title} — {step.description} (files: {files}{owner_note})"
+    steps = []
+    for step in plan.steps[:12]:
+        owner = (step_owner or {}).get(step.step_id) or "a1"
+        steps.append(
+            {
+                "id": step.step_id,
+                "title": (step.title or "")[:80],
+                "files": [str(p) for p in (step.files_touched or [])[:8]],
+                "agent": owner if owner in ("a1", "a2") else "a1",
+            }
         )
-    return "\n".join(lines)
+    payload = {"plan_id": plan.plan_id, "steps": steps}
+    return (
+        json.dumps(payload, separators=(",", ":"))
+        + '\nReturn {"tickets":[...]} only. Start with {.'
+    )
 
 
-def _to_ticket(raw: dict, plan_id: str) -> Ticket:
-    raw = dict(raw)
-    raw.setdefault("lane", "parallel")
-    raw.setdefault("depends_on", [])
-    raw["plan_id"] = plan_id
-    raw["status"] = "pending"
-    return Ticket(**raw)
+def tickets_from_plan(plan: FinalPlan, step_owner: dict[str, str] | None) -> list[Ticket]:
+    """Deterministic tickets when K2 returns prose instead of JSON.
+
+    One ticket per plan step, files from files_touched, owner from the
+    agent that proposed the step. The validator still demotes overlaps.
+    """
+    tickets: list[Ticket] = []
+    for i, step in enumerate(plan.steps, start=1):
+        files = [str(p) for p in step.files_touched if p] or [f"src/{step.step_id}.py"]
+        owner = (step_owner or {}).get(step.step_id)
+        if owner not in ("a1", "a2"):
+            owner = "a1" if i % 2 else "a2"
+        tickets.append(
+            Ticket(
+                ticket_id=f"t{i}",
+                plan_id=plan.plan_id,
+                title=step.title or step.step_id,
+                description=step.description or "",
+                assigned_agent=owner,
+                files_owned=files,
+                depends_on=[],
+                lane="parallel",
+                status="pending",
+            )
+        )
+    if not tickets:
+        tickets.append(
+            Ticket(
+                ticket_id="t1",
+                plan_id=plan.plan_id,
+                title=(plan.summary or "execute plan")[:80],
+                description=plan.summary or "",
+                assigned_agent="a1",
+                files_owned=["src/app.py"],
+                depends_on=[],
+                lane="parallel",
+                status="pending",
+            )
+        )
+    return tickets
+
+
+def _to_ticket(raw: dict, plan_id: str) -> Ticket | None:
+    files = raw.get("files_owned") or []
+    if not isinstance(files, list):
+        files = []
+    files = [str(p) for p in files if p]
+    agent = str(raw.get("assigned_agent") or "a1")
+    if agent not in ("a1", "a2"):
+        agent = "a1"
+    ticket_id = str(raw.get("ticket_id") or "").strip() or "t0"
+    lane = "sequential" if str(raw.get("lane") or "") == "sequential" else "parallel"
+    depends = raw.get("depends_on") or []
+    if not isinstance(depends, list):
+        depends = []
+    try:
+        return Ticket(
+            ticket_id=ticket_id,
+            plan_id=plan_id,
+            title=str(raw.get("title") or ticket_id),
+            description=str(raw.get("description") or ""),
+            assigned_agent=agent,
+            files_owned=files,
+            depends_on=[str(x) for x in depends],
+            lane=lane,
+            status="pending",
+        )
+    except Exception:  # noqa: BLE001 — skip a malformed ticket, keep the rest
+        return None
 
 
 def _call_and_parse(user: str, chat_fn) -> dict:
@@ -75,9 +127,9 @@ def _call_and_parse(user: str, chat_fn) -> dict:
     except ValueError:
         raw = chat_fn(
             system=K2_TICKETING_SYSTEM,
-            user=user + "\n\nYour previous reply was not valid JSON. Reply with the JSON object only.",
+            user='{"tickets":[{"ticket_id":"t1","title":"x","description":"x","assigned_agent":"a1","files_owned":["src/a.py"],"lane":"parallel","depends_on":[]}]}',
             provider=moderator_provider(),
-            max_tokens=4096,
+            max_tokens=2048,
         )
         return extract_object(raw)
 
@@ -94,24 +146,41 @@ def decompose_tickets(
     reject and ask it to regenerate (bounded by max_regenerations) instead
     of guessing ownership on its behalf.
 
+    If K2 never returns JSON, fall back to one ticket per plan step so
+    approval still produces tickets_created.
+
     `chat_fn` defaults to providers.chat and is overridable in tests so
     this never makes a real model call unless the caller wants it to.
     """
     user = _build_user_prompt(plan, step_owner)
 
     for attempt in range(max_regenerations + 1):
-        data = _call_and_parse(user, chat_fn)
-        raw_tickets = data.get("tickets")
+        try:
+            data = _call_and_parse(user, chat_fn)
+        except ValueError:
+            # Already retried once inside _call_and_parse. Don't burn
+            # another regeneration on English restatements — fall back.
+            break
+        raw_tickets = data.get("tickets") if isinstance(data, dict) else None
         if not isinstance(raw_tickets, list):
             raw_tickets = []
-        tickets = [_to_ticket(t, plan.plan_id) for t in raw_tickets if isinstance(t, dict)]
+        tickets = [
+            t
+            for t in (_to_ticket(item, plan.plan_id) for item in raw_tickets if isinstance(item, dict))
+            if t is not None
+        ]
+
+        if not tickets:
+            if attempt >= max_regenerations:
+                break
+            continue
 
         try:
             fixed, adjustments = validate_and_fix_tickets(tickets)
             return TicketingResult(tickets=fixed, adjustments=adjustments)
         except EmptyFilesOwnedError as exc:
             if attempt >= max_regenerations:
-                raise
+                break
             user = (
                 user
                 + f"\n\nYour last reply (tickets {exc.ticket_ids}) left files_owned "
@@ -120,4 +189,6 @@ def decompose_tickets(
                 + json.dumps({"tickets": raw_tickets})
             )
 
-    raise AssertionError("unreachable")  # loop always returns or raises above
+    fallback = tickets_from_plan(plan, step_owner)
+    fixed, adjustments = validate_and_fix_tickets(fallback)
+    return TicketingResult(tickets=fixed, adjustments=adjustments)

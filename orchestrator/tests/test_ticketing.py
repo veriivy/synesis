@@ -1,11 +1,8 @@
 import json
 from pathlib import Path
 
-import pytest
-
 from orchestrator.schemas import FinalPlan
 from orchestrator.ticketing import decompose_tickets
-from orchestrator.validator import EmptyFilesOwnedError
 
 FIXTURE = Path(__file__).parent / "fixtures" / "final_plan.json"
 
@@ -142,7 +139,7 @@ def test_empty_files_owned_triggers_one_regeneration_then_succeeds():
     assert result.tickets[0].files_owned == ["src/auth.py"]
 
 
-def test_empty_files_owned_exhausts_regenerations_and_raises():
+def test_empty_files_owned_exhausts_regenerations_and_falls_back():
     plan = load_plan()
     always_empty = json.dumps(
         {
@@ -159,10 +156,11 @@ def test_empty_files_owned_exhausts_regenerations_and_raises():
     )
     fake = FakeChat([always_empty, always_empty])
 
-    with pytest.raises(EmptyFilesOwnedError):
-        decompose_tickets(plan, chat_fn=fake, max_regenerations=1)
+    result = decompose_tickets(plan, chat_fn=fake, max_regenerations=1)
 
     assert len(fake.calls) == 2
+    assert [t.ticket_id for t in result.tickets] == ["t1", "t2", "t3"]
+    assert result.tickets[0].files_owned == ["src/auth.py", "src/middleware/rate_limit.py"]
 
 
 def test_markdown_fenced_json_is_repaired():
@@ -191,11 +189,14 @@ def test_markdown_fenced_json_is_repaired():
     assert result.tickets[0].ticket_id == "t1"
 
 
-def test_unparseable_output_is_retried_once_then_raises():
+def test_unparseable_output_is_retried_once_then_falls_back_to_plan_steps():
     plan = load_plan()
     fake = FakeChat(["not json at all, no braces", "still not json"])
 
-    with pytest.raises(ValueError):
-        decompose_tickets(plan, chat_fn=fake)
+    result = decompose_tickets(plan, chat_fn=fake)
 
     assert len(fake.calls) == 2
+    assert [t.ticket_id for t in result.tickets] == ["t1", "t2", "t3"]
+    assert result.tickets[1].files_owned == ["src/auth.py"]
+    assert result.tickets[1].lane == "sequential"
+    assert result.tickets[1].depends_on == ["t1"]
