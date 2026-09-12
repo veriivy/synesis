@@ -1,3 +1,12 @@
-# k2mod.py talks to IFM/K2 through the OpenAI-compatible chat API.
+# k2mod.py / orchestrator talk to IFM/K2 through the OpenAI-compatible chat API.
 openai>=1.60
 python-dotenv>=1.0
+
+# Claude advocate (a1). Native Messages API — not OpenAI-compatible enough
+# to share the IFM client.
+anthropic>=0.40
+
+# Long-running FastAPI process. The K2 call takes tens of seconds; Vercel
+# functions time out, so this stays a Python server (Vultr later).
+fastapi>=0.115
+uvicorn>=0.32
