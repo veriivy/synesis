@@ -108,7 +108,8 @@ export function useLiveRoom(roomId: string): LiveRoom {
 
   const refetchFile = useCallback(
     async (path: string) => {
-      const res = await fetch(`${ORCHESTRATOR_URL}/rooms/${roomId}/files/${path}`);
+      const encoded = path.split("/").map(encodeURIComponent).join("/");
+      const res = await fetch(`${ORCHESTRATOR_URL}/rooms/${roomId}/files/${encoded}`);
       if (!res.ok) return;
       const body = (await res.json()) as { content: string; last_written_by: string | null };
       setState((prev) => ({

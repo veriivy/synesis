@@ -348,13 +348,15 @@ export function roomReducer(state: RoomState, event: SSEEvent): RoomState {
     case "file_written": {
       const file = base.files[event.path];
       // A refused write changes no file. It only ever appears in the log.
+      // An accepted write to a new path still lands in the tree so live
+      // rooms can show files the ticket created (SSE has no body; live
+      // refetch fills content, fixtures use pendingContent).
       const files =
-        file && event.accepted
+        event.accepted
           ? {
               ...base.files,
               [event.path]: {
-                ...file,
-                content: file.pendingContent ?? file.content,
+                content: file?.pendingContent ?? file?.content ?? "",
                 lastWrittenBy: event.agent_id,
               },
             }
