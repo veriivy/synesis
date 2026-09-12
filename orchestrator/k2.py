@@ -35,8 +35,11 @@ Rules:
 - issue_id values are d1, d2, d3, ...
 - positions keys are the agent_ids from the PoAs.
 - severity is "blocking" or "minor". A conflict between two must-haves is blocking.
-- converged is true only if there are no blocking differences.
+- converged is true only if there are no blocking differences. If a must-have on each
+  side still collides, converged is false.
 - Cite files_touched when two agents claim the same path.
+- When a prior-round transcript is present, it includes revised PoAs. Diff those
+  latest plans, not only the opening drafts.
 """
 
 
@@ -84,6 +87,45 @@ def ifm_settings() -> tuple[str, str, str]:
     return api_key, base_url, model
 
 
+def chat(*, system: str, user: str, max_tokens: int = 2048) -> str:
+    """One completion. Advocates and K2 both go through here so the model is swappable."""
+    api_key, base_url, model = ifm_settings()
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=90.0, max_retries=1)
+    kwargs: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    # Some gateways want max_tokens, some want max_completion_tokens. Prefer the
+    # older name; if the gateway rejects it, retry once without a cap.
+    try:
+        resp = client.chat.completions.create(**kwargs, max_tokens=max_tokens)
+    except Exception:
+        resp = client.chat.completions.create(**kwargs)
+    return (resp.choices[0].message.content or "").strip()
+
+
+def blocking_ids(analysis: dict) -> list[str]:
+    ids = []
+    for diff in analysis.get("differences") or []:
+        if not isinstance(diff, dict):
+            continue
+        if str(diff.get("severity", "")).lower() == "blocking":
+            issue_id = str(diff.get("issue_id") or "").strip()
+            if issue_id:
+                ids.append(issue_id)
+    return ids
+
+
+def has_converged(analysis: dict) -> bool:
+    """Blocking diffs win over a model's converged:true tick."""
+    if blocking_ids(analysis):
+        return False
+    return bool(analysis.get("converged"))
+
+
 def analyze(
     *,
     context: Any,
@@ -91,10 +133,12 @@ def analyze(
     poa1: Any,
     poa2: Any,
     round_index: int = 1,
+    transcript: str = "",
 ) -> dict:
     """One K2 call. Blocking — run in a thread from the FastAPI event loop."""
-    api_key, base_url, model = ifm_settings()
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=90.0, max_retries=1)
+    extra = ""
+    if transcript.strip():
+        extra = "\n\nPrior-round transcript (use this; do not only re-diff the original PoAs):\n" + transcript
     user = (
         "Shared context:\n"
         + json.dumps(context, indent=2)
@@ -104,19 +148,13 @@ def analyze(
         + json.dumps(poa1, indent=2)
         + "\n\nPoA2:\n"
         + json.dumps(poa2, indent=2)
-        + f"\n\nDiff these two PoAs. Round is {round_index}."
+        + extra
+        + f"\n\nDiff the current positions. Round is {round_index}."
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": user},
-        ],
-    )
-    raw = (resp.choices[0].message.content or "").strip()
+    raw = chat(system=SYSTEM, user=user, max_tokens=4096)
     analysis = extract_object(raw)
-    analysis.setdefault("round", round_index)
+    analysis["round"] = round_index
     analysis.setdefault("similarities", [])
     analysis.setdefault("differences", [])
-    analysis.setdefault("converged", False)
+    analysis["converged"] = has_converged(analysis)
     return analysis
