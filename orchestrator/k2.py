@@ -14,10 +14,9 @@ FIXTURES = ROOT / "fixtures"
 
 SYSTEM = """\
 You are K2, the moderator of a design negotiation. You do not advocate for either user.
-You structurally diff two Plans of Action. You do not pick a winner. You do not summarize
-without listing concrete similarities and differences.
+You structurally diff two Plans of Action. You do not pick a winner.
 
-Return a single JSON object, no markdown, matching this shape exactly:
+Return ONE compact JSON object. No markdown, no commentary, no truncated strings.
 {
   "round": 1,
   "similarities": [{ "topic": "...", "detail": "..." }],
@@ -31,14 +30,13 @@ Return a single JSON object, no markdown, matching this shape exactly:
 }
 
 Rules:
+- At most 4 similarities and 4 differences. Each detail/position is ONE short sentence.
 - issue_id values are d1, d2, d3, ...
 - positions keys are the agent_ids from the PoAs.
-- severity is "blocking" or "minor". A conflict between two must-haves is blocking.
-- converged is true only if there are no blocking differences. If a must-have on each
-  side still collides, converged is false.
-- Cite files_touched when two agents claim the same path.
-- When a prior-round transcript is present, it includes revised PoAs. Diff those
-  latest plans, not only the opening drafts.
+- severity is "blocking" or "minor". Two must-haves colliding is blocking.
+- converged is true only if there are no blocking differences.
+- When a prior-round transcript is present, diff the LATEST PoAs, not the opening drafts.
+- Finish the JSON. Never cut a string mid-word.
 """
 
 
@@ -47,6 +45,44 @@ def load_fixture(name: str) -> Any:
     if not path.is_file():
         raise FileNotFoundError(f"missing fixture: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _repair_truncated_object(text: str) -> str | None:
+    """Close a JSON object that was cut off mid-generation (token cap)."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    s = text[start:]
+    stack: list[str] = []
+    in_str = False
+    escape = False
+    for ch in s:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+    if in_str:
+        s += '"'
+    s += "".join(reversed(stack))
+    s = re.sub(r",(\s*[}\]])", r"\1", s)
+    try:
+        json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    return s
 
 
 def extract_object(text: str) -> dict:
@@ -59,6 +95,9 @@ def extract_object(text: str) -> dict:
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if match:
         candidates.append(match.group(0))
+    repaired = _repair_truncated_object(text)
+    if repaired:
+        candidates.append(repaired)
 
     last_error: Exception | None = None
     for raw in candidates:
@@ -104,7 +143,12 @@ def analyze(
     """One K2 call. Blocking — run in a thread from the FastAPI event loop."""
     extra = ""
     if transcript.strip():
-        extra = "\n\nPrior-round transcript (use this; do not only re-diff the original PoAs):\n" + transcript
+        clipped = transcript.strip()
+        if len(clipped) > 6000:
+            clipped = clipped[-6000:]
+        extra = (
+            "\n\nPrior-round transcript (latest PoAs matter; ignore fluff):\n" + clipped
+        )
     user = (
         "Shared context:\n"
         + json.dumps(context, indent=2)
@@ -115,24 +159,38 @@ def analyze(
         + "\n\nPoA2:\n"
         + json.dumps(poa2, indent=2)
         + extra
-        + f"\n\nDiff the current positions. Round is {round_index}."
+        + f"\n\nDiff the current positions. Round is {round_index}. "
+        "Compact JSON only. Finish the object."
     )
     raw = chat(
         system=SYSTEM,
         user=user,
         provider=moderator_provider(),
-        max_tokens=4096,
+        max_tokens=8192,
     )
     try:
         analysis = extract_object(raw)
     except ValueError:
-        raw = chat(
-            system=SYSTEM,
-            user=user + "\n\nYour previous reply was not valid JSON. Reply with the JSON object only.",
-            provider=moderator_provider(),
-            max_tokens=4096,
-        )
-        analysis = extract_object(raw)
+        try:
+            raw = chat(
+                system=SYSTEM,
+                user=(
+                    f"Round {round_index}. Reply with compact valid JSON only "
+                    "(similarities + differences + converged). No markdown."
+                ),
+                provider=moderator_provider(),
+                max_tokens=2048,
+            )
+            analysis = extract_object(raw)
+        except ValueError:
+            # Do not kill the room. Round 3 often truncates; keep going.
+            analysis = {
+                "round": round_index,
+                "similarities": [],
+                "differences": [],
+                "converged": False,
+                "note": "moderator JSON truncated; treating round as not converged",
+            }
     analysis["round"] = round_index
     analysis.setdefault("similarities", [])
     analysis.setdefault("differences", [])
