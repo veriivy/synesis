@@ -206,7 +206,8 @@ export function ChatPanel({
             }}
             rows={1}
             placeholder="Interject — your agent gets this before the next round"
-            className="max-h-28 min-h-[20px] flex-1 resize-none bg-transparent text-[13px] text-ide-text outline-none placeholder:text-ide-faint"
+            title="Drag the bottom-right corner to resize"
+            className="min-h-[22px] flex-1 resize-y bg-transparent text-[13px] text-ide-text outline-none placeholder:text-ide-faint"
           />
           <button
             type="button"

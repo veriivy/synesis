@@ -4,6 +4,7 @@
 
 import type {
   Analysis,
+  Difference,
   FileWritten,
   FinalPlan,
   Participant,
@@ -150,6 +151,20 @@ export function providerOfAgent(state: RoomState, agent_id: string): Provider | 
 
 export function localParticipant(state: RoomState): Participant | undefined {
   return state.participants.find((p) => p.is_local);
+}
+
+/**
+ * Find a difference by issue_id, newest analysis first. Agent messages cite
+ * issue_ids; this is what turns those citations into topic and severity.
+ */
+export function differenceById(state: RoomState, issueId: string): Difference | undefined {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m = state.messages[i];
+    if (m.kind !== "analysis") continue;
+    const found = m.analysis.differences.find((d) => d.issue_id === issueId);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 export function blockingCount(a: Analysis): number {

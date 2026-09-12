@@ -1,5 +1,10 @@
 import type { FileWritten, TicketStatus } from "@/lib/types";
-import { type RoomState, participantById, participantOfAgent } from "@/lib/roomReducer";
+import {
+  type RoomState,
+  differenceById,
+  participantById,
+  participantOfAgent,
+} from "@/lib/roomReducer";
 import { clock, PROVIDER_COLOR, PROVIDER_LABEL, ProviderDot, Tag } from "@/components/ui";
 
 /* --------------------------------- user ------------------------------------ */
@@ -73,11 +78,24 @@ export function AgentMessage({
             </span>
           )}
           <span className="ml-auto flex items-center gap-1">
-            {addressesIssues.map((id) => (
-              <Tag key={id} title={`addresses ${id}`}>
-                {id}
-              </Tag>
-            ))}
+            {addressesIssues.map((id) => {
+              const d = differenceById(state, id);
+              return (
+                <Tag
+                  key={id}
+                  color={
+                    d?.severity === "blocking"
+                      ? "var(--color-ide-blocking)"
+                      : d?.severity === "minor"
+                        ? "var(--color-ide-minor)"
+                        : undefined
+                  }
+                  title={d ? `${id} — ${d.topic} (${d.severity})` : `addresses ${id}`}
+                >
+                  {id}
+                </Tag>
+              );
+            })}
             <span className="ml-1 font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
           </span>
         </div>
@@ -91,6 +109,8 @@ export function AgentMessage({
 
 /* ------------------------------- moderator --------------------------------- */
 
+const K2 = "var(--color-ide-k2)";
+
 export function ModeratorMessage({
   content,
   round,
@@ -101,27 +121,40 @@ export function ModeratorMessage({
   ts: string;
 }) {
   return (
-    <div className="px-4 py-1.5">
+    <div className="px-4 py-2">
       <div
-        className="rounded border-l-2 px-3 py-2.5"
+        className="flex gap-3 rounded border-l-[3px] px-3 py-3"
         style={{
-          borderColor: "var(--color-ide-k2)",
-          background: "color-mix(in srgb, var(--color-ide-k2) 8%, var(--color-ide-panel))",
+          borderColor: K2,
+          background: "color-mix(in srgb, var(--color-ide-k2) 9%, var(--color-ide-panel))",
         }}
       >
-        <div className="flex items-center gap-2">
-          <span
-            className="font-mono text-[10px] font-semibold tracking-widest uppercase"
-            style={{ color: "var(--color-ide-k2)" }}
-          >
-            K2 · moderator
-          </span>
-          <span className="font-mono text-[10px] text-ide-faint">round {round}</span>
-          <span className="ml-auto font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
+        <span
+          aria-hidden
+          className="mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-sm font-mono text-[10px] font-semibold"
+          style={{
+            color: K2,
+            background: "color-mix(in srgb, var(--color-ide-k2) 18%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--color-ide-k2) 45%, transparent)",
+          }}
+        >
+          K2
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className="font-mono text-[10px] font-semibold tracking-widest uppercase"
+              style={{ color: K2 }}
+            >
+              moderator
+            </span>
+            <span className="font-mono text-[10px] text-ide-faint">round {round}</span>
+            <span className="ml-auto font-mono text-[10px] text-ide-faint">{clock(ts)}</span>
+          </div>
+          <p className="mt-1 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ide-text">
+            {content}
+          </p>
         </div>
-        <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap text-ide-text">
-          {content}
-        </p>
       </div>
     </div>
   );
