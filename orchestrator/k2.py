@@ -52,18 +52,25 @@ def load_fixture(name: str) -> Any:
 def extract_object(text: str) -> dict:
     """Model output is untrusted. Recover a JSON object or fail clearly."""
     text = text.strip()
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1))
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if match:
-        data = json.loads(match.group(0))
-        if isinstance(data, dict):
-            return data
-    raise ValueError(f"K2 did not return JSON:\n{text[:800]}")
+        candidates.append(match.group(0))
+
+    last_error: Exception | None = None
+    for raw in candidates:
+        for variant in (raw, re.sub(r",(\s*[}\]])", r"\1", raw)):
+            try:
+                data = json.loads(variant)
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                continue
+            if isinstance(data, dict):
+                return data
+    raise ValueError(f"K2 did not return JSON ({last_error}):\n{text[:800]}")
 
 
 def blocking_ids(analysis: dict) -> list[str]:
@@ -116,7 +123,16 @@ def analyze(
         provider=moderator_provider(),
         max_tokens=4096,
     )
-    analysis = extract_object(raw)
+    try:
+        analysis = extract_object(raw)
+    except ValueError:
+        raw = chat(
+            system=SYSTEM,
+            user=user + "\n\nYour previous reply was not valid JSON. Reply with the JSON object only.",
+            provider=moderator_provider(),
+            max_tokens=4096,
+        )
+        analysis = extract_object(raw)
     analysis["round"] = round_index
     analysis.setdefault("similarities", [])
     analysis.setdefault("differences", [])

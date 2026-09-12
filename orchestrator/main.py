@@ -7,7 +7,7 @@
 Opening PoAs come from /fixtures. K2 publishes an `analysis` (humans and agents
 both see it). Each advocate then rewrites its own PoA from that comparison, in
 parallel. K2 diffs the new plans. Default: 3 rounds (`MAX_ROUNDS` in .env).
-a1 is Claude, a2 is GPT, moderator is K2 — missing keys fall back to IFM.
+a1 is Gemini, a2 is ChatGPT, moderator is K2 — missing/failed keys fall back to IFM.
 """
 
 from __future__ import annotations

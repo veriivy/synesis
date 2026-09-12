@@ -57,6 +57,15 @@ PROVIDERS: dict[str, Provider] = {
         default_model="gpt-4.1",
         base_url_env="OPENAI_BASE_URL",
     ),
+    "google": Provider(
+        key="google",
+        kind="openai_compatible",
+        api_key_env="GOOGLE_API_KEY",
+        model_env="GOOGLE_MODEL",
+        default_model="gemini-2.5-flash",
+        base_url_env="GOOGLE_BASE_URL",
+        default_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
 }
 
 
@@ -85,18 +94,23 @@ def moderator_provider() -> str:
 
 
 def agent_provider(agent_id: str) -> str:
-    defaults = {"a1": "anthropic", "a2": "openai"}
+    defaults = {"a1": "google", "a2": "openai"}
     env_names = {"a1": "AGENT_A1_PROVIDER", "a2": "AGENT_A2_PROVIDER"}
     fallback = defaults.get(agent_id, "ifm")
     env = env_names.get(agent_id)
     if not env:
         return fallback
-    return os.getenv(env, fallback).strip() or fallback
+    raw = os.getenv(env, fallback).strip() or fallback
+    if raw == "gemini":
+        return "google"
+    return raw
 
 
 def resolve(provider_key: str) -> str:
     """Return a provider we can actually call. Missing keys fall back to IFM."""
-    wanted = provider_key if provider_key in PROVIDERS else "ifm"
+    aliases = {"gemini": "google", "gpt": "openai", "claude": "anthropic", "k2": "ifm"}
+    wanted = aliases.get(provider_key, provider_key)
+    wanted = wanted if wanted in PROVIDERS else "ifm"
     if has_key(wanted):
         return wanted
     if wanted != "ifm" and has_key("ifm"):
@@ -138,7 +152,9 @@ def _openai_complete(cfg: Provider, *, system: str, user: str, max_tokens: int) 
     }
     try:
         resp = client.chat.completions.create(**kwargs, max_tokens=max_tokens)
-    except Exception:
+    except Exception as exc:
+        if "max_token" not in str(exc).lower():
+            raise
         resp = client.chat.completions.create(**kwargs)
     return (resp.choices[0].message.content or "").strip()
 
@@ -161,11 +177,26 @@ def _anthropic_complete(cfg: Provider, *, system: str, user: str, max_tokens: in
     return "\n".join(parts).strip()
 
 
-def chat(*, system: str, user: str, provider: str = "ifm", max_tokens: int = 2048) -> str:
-    """One completion. Pass provider='anthropic' | 'openai' | 'ifm'."""
-    key = resolve(provider)
-    cfg = PROVIDERS[key]
-    log.info("chat provider=%s model=%s", key, model_for(key))
+def _complete(cfg: Provider, *, system: str, user: str, max_tokens: int) -> str:
     if cfg.kind == "anthropic":
         return _anthropic_complete(cfg, system=system, user=user, max_tokens=max_tokens)
     return _openai_complete(cfg, system=system, user=user, max_tokens=max_tokens)
+
+
+def chat(*, system: str, user: str, provider: str = "ifm", max_tokens: int = 2048) -> str:
+    """One completion. Pass provider='google' | 'openai' | 'anthropic' | 'ifm'.
+
+    Auth/quota failures on Claude/GPT/Gemini retry once on IFM so a round still
+    produces a revised plan instead of echoing the old one.
+    """
+    key = resolve(provider)
+    cfg = PROVIDERS[key]
+    log.info("chat provider=%s model=%s", key, model_for(key))
+    try:
+        return _complete(cfg, system=system, user=user, max_tokens=max_tokens)
+    except Exception as exc:
+        if key == "ifm":
+            raise
+        log.warning("%s call failed (%s); retrying on IFM/K2", key, exc)
+        ifm = PROVIDERS["ifm"]
+        return _complete(ifm, system=system, user=user, max_tokens=max_tokens)
