@@ -6,60 +6,71 @@ tasking/ticketing/execution slice built on `feature/Shawn_orchestrator_backend`)
 into one. Read this before picking up more work so effort doesn't duplicate or
 drift from what's actually there.
 
-**Update, same branch, teammates asleep:** items 4 (Mongo) and 5 (BYO keys)
-below are now done — see their sections for what that does and doesn't cover.
-Item 2 (merge the PR) is **still not done** and needs a human: Claude Code's
-own auto-mode safety classifier refused the merge command outright ("Merge
-Without Review") when asked to do it unattended. That's a deliberate guardrail
-this session isn't overriding — merge via GitHub's UI, or locally, when
-someone's actually looking at the diff.
+**Update:** items 2 (merge), 4 (Mongo), and 5 (BYO keys) below are all done —
+`feature/Shawn_orchestrator_backend` was merged into `main` via PR #2. `main`
+was re-verified after the merge: 42/42 tests pass, web lint/build/reducer-check
+all clean. A security review of the branch also ran before/around the merge —
+see the new item at the top of "What's still missing," it found one real,
+unresolved issue worth reading before demo prep continues.
 
 ## Where things stand
 
-**On `main` (merged, working):**
+**On `main` (merged, working — PR #2 landed):**
 - Real Gemini (a1) / ChatGPT (a2) / IFM-K2 negotiation loop — `providers.py`,
   `agents.py`, `k2.py`
 - Web frontend — fixture-driven `/` and `/dev` pages, fully working
-  reducer/event-sourcing architecture (`web/lib/roomReducer.ts`)
-
-**On `feature/Shawn_orchestrator_backend` (pushed, PR open, not yet merged):**
-- The full endpoint contract wired onto that real loop: task intake,
+  reducer/event-sourcing architecture (`web/lib/roomReducer.ts`), plus
+  `web/app/live` — a real page that talks to the real backend over SSE
+- The full endpoint contract wired onto the negotiation loop: task intake,
   `FinalPlan` building, the disjoint-file-ownership validator, ticket
   decomposition, `write_file` enforcement, execution
-- `web/app/live` — a real page that talks to the real backend over SSE, not
-  fixtures
 - MongoDB Atlas persistence (`orchestrator/db.py`) — every SSE event durably
   recorded, a room snapshot saved at each milestone, entirely optional
   (no-ops without `MONGODB_URI`)
-- BYO provider keys actually threaded through (`main._agent_provider_and_key`)
-  — a participant's own `provider` + `api_key` from `POST /participants` now
+- BYO provider keys threaded through (`main._agent_provider_and_key`) — a
+  participant's own `provider` + `api_key` from `POST /participants` now
   reaches `agents.draft_poa`/`revise_poa`'s `providers.chat` call, instead of
   always using the server's static `AGENT_A1_PROVIDER`/`AGENT_A2_PROVIDER` +
   env key
-- 42 passing tests, verified manually end-to-end over a real socket
+- 42 passing tests; web lint/build/`check:reducer` all clean — both
+  re-verified against `main` after the merge, not just the feature branch
 
 **Net effect:** the project has gone from "two people have written
-negotiation logic, nobody has a runnable product" to one merge away from a
-room that goes create → join → tasks → negotiate → approve → tickets →
-execute → files, for real, with real model calls, and the core judged
-technical claim (conflict-free parallel writes, validated in code) working
-and tested.
+negotiation logic, nobody has a runnable product" to a room that goes
+create → join → tasks → negotiate → approve → tickets → execute → files, for
+real, with real model calls, and the core judged technical claim
+(conflict-free parallel writes, validated in code) working and tested — on
+`main`, not stuck on a branch.
 
 ## What's still missing before this is demo-ready
 
+0. **Security finding, unresolved: participant/task/message identity
+   spoofing enables BYO-key hijack.** `POST /participants`, `/tasks`, and
+   `/messages` all trust a client-supplied `user_id` with no ownership
+   check — a second `POST /participants` with `user_id: "u1"` silently
+   overwrites the real u1's stored `provider`/`api_key`. Because BYO keys
+   are now wired in (item 5 below), this has a real, live consequence:
+   whoever knows the `room_id` (routinely shared as `?room=<id>`) can
+   redirect u1's agent's real LLM calls — carrying the full negotiation
+   transcript — to a provider account they control, mid-negotiation, no
+   race condition needed. Confirmed via an independent second-pass review
+   (confidence 8/10), distinct from "the whole app has no login system"
+   (that framing was checked too and rejected as the actual issue — see the
+   session transcript's security-review turn for the full reasoning). Fix:
+   issue a per-participant token at first join, require it on subsequent
+   calls for that `user_id`, reject re-registration without it. Worth
+   fixing before any demo that uses real BYO keys; lower priority if the
+   demo runs entirely on server-side keys with the fixture-fallback path.
 1. **Nobody's clicked through it in a browser yet.** Everything above is
    verified via curl/pytest, not by opening `/live` and watching two rounds
-   of negotiation render. This is the highest-priority next step — do it
-   before anything else, because UI bugs (a card that doesn't render
-   `poa_generated` correctly, a state transition that never fires) are
-   exactly what automated tests won't catch and what the judges will
+   of negotiation render. This is the highest-priority *usability* next
+   step — do it before anything else, because UI bugs (a card that doesn't
+   render `poa_generated` correctly, a state transition that never fires)
+   are exactly what automated tests won't catch and what the judges will
    actually see.
-2. **The PR still isn't merged — needs a human.** Claude Code's auto-mode
-   safety classifier blocked an unattended `git merge` outright ("Merge
-   Without Review"). Merge it via GitHub's UI (link in the PR), or locally
-   after actually reading the diff. Nothing else in this list can safely
-   build further on `main` until this happens without risking a third
-   divergence.
+2. **The PR is merged.** ✅ `feature/Shawn_orchestrator_backend` -> `main`
+   via PR #2. Re-verified on `main` post-merge: 42/42 tests pass, web
+   lint/build/`check:reducer` all clean.
 3. **No real multi-browser room.** `/live` hardcodes a fixed demo peer for
    u2. Fine for a solo click-through; not fine for "two developers,
    incompatible assumptions" as an actual live demo unless one person plays
@@ -91,7 +102,10 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
 "8am–11am: wire providers, confirm K2" milestone — the merge above basically
 *is* that checkpoint, done a bit more thoroughly. Next:
 
-1. **Merge the PR** (needs a human — see item 2 above).
+1. **Decide on the identity-spoofing fix** (item 0 above) — at minimum,
+   decide whether the demo avoids the exposure entirely by not using real
+   BYO keys, or whether it's worth a quick token check before relying on
+   BYO keys live.
 2. **Click through `/live` in a real browser**, both users' worth of it,
    watch for anything that renders wrong. Fix what you find.
 3. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
