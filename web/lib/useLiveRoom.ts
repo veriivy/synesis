@@ -36,7 +36,10 @@ const ALL_EVENT_TYPES: SSEEventType[] = [
   "error",
 ];
 
-async function postJSON(path: string, body: unknown): Promise<void> {
+/** Returns the parsed JSON body on success (participant_token lives
+ * there for /participants), or null on failure — logged, not thrown, so
+ * one failed call doesn't take the whole room down client-side. */
+async function postJSON(path: string, body: unknown): Promise<Record<string, unknown> | null> {
   const res = await fetch(`${ORCHESTRATOR_URL}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -44,7 +47,9 @@ async function postJSON(path: string, body: unknown): Promise<void> {
   });
   if (!res.ok) {
     console.error(`${path} -> ${res.status}: ${await res.text()}`);
+    return null;
   }
+  return (await res.json()) as Record<string, unknown>;
 }
 
 /** The demo peer's requirement. The orchestrator drafts both PoAs with a
@@ -75,13 +80,28 @@ export const DEMO_TASK_U2 =
  *    call more than once (a reconnect replaying its backlog, say) — a
  *    second call just 409s and is ignored here.
  */
-export function useLiveRoom(roomId: string): Room {
+/** useLiveRoom's return, extending Room with the local user's
+ * participant_token — needed by callers outside this hook (app/live's
+ * TaskIntake submit) that POST /tasks for LOCAL_USER_ID directly instead
+ * of through a method this hook exposes. */
+export interface LiveRoom extends Room {
+  participantToken: string | null;
+}
+
+export function useLiveRoom(roomId: string): LiveRoom {
   const [state, setState] = useState<RoomState>(() => ({ ...initialRoomState, roomId }));
   const [identity, setIdentity] = useState<LocalIdentity | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [eventCount, setEventCount] = useState(0);
+  const [participantToken, setParticipantToken] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const identityRef = useRef<LocalIdentity | null>(null);
+  // The security fix (CLAUDE.md: no auth system, but a stolen BYO key is a
+  // real hijack): the orchestrator now requires the token issued at first
+  // join on every subsequent /tasks, /messages, /plan/approve call for
+  // that user_id. Held in a ref (not just state) so approve()/send() —
+  // fired from user clicks, not effects — always read the current value.
+  const myTokenRef = useRef<string | null>(null);
   const executeTriggeredRef = useRef(false);
 
   const refetchFile = useCallback(
@@ -127,7 +147,17 @@ export function useLiveRoom(roomId: string): Room {
     sourceRef.current = source;
 
     const handle = (msg: MessageEvent<string>) => {
-      const event = JSON.parse(msg.data) as SSEEvent;
+      let event = JSON.parse(msg.data) as SSEEvent;
+      // The backend's participant_joined never carries a display_name —
+      // it's not in the frozen contract (web/lib/types.ts's comment on
+      // ParticipantJoined.display_name says as much). The local user's
+      // name comes from joinLocal's direct patch instead; the demo peer
+      // (always "u2") needs the same treatment here that useRoom.ts's
+      // demoEvents mapping already applies for the fixture path, or it
+      // shows up as the bare string "u2" in the chat log and top bar.
+      if (event.type === "participant_joined" && event.user_id === "u2" && !event.display_name) {
+        event = { ...event, display_name: PEER_NAME };
+      }
       setState((prev) => roomReducer(prev, event));
       setEventCount((n) => n + 1);
 
@@ -174,27 +204,34 @@ export function useLiveRoom(roomId: string): Room {
       // peer's task — have to land before `identity` flips and TaskIntake
       // appears, or a fast submit can race ahead of u2's setup and 409.
       void (async () => {
-        await postJSON(`/rooms/${roomId}/participants`, {
+        const mine = await postJSON(`/rooms/${roomId}/participants`, {
           user_id: LOCAL_USER_ID,
           display_name: next.display_name,
           provider: next.provider,
           model: next.model,
           api_key: next.api_key,
         });
+        const myToken = (mine?.participant_token as string | undefined) ?? null;
+        myTokenRef.current = myToken;
+
         // Phase 1: this browser is the only real client, so the peer is a
         // fixed second participant (mirrors useRoom.ts's PEER_NAME) rather
         // than a second real browser — true multi-browser rooms are
         // future work, not part of wiring the stream itself.
-        await postJSON(`/rooms/${roomId}/participants`, {
+        const peer = await postJSON(`/rooms/${roomId}/participants`, {
           user_id: "u2",
           display_name: PEER_NAME,
           provider: "gpt",
           model: "gpt-5",
         });
+        const peerToken = (peer?.participant_token as string | undefined) ?? null;
         await postJSON(`/rooms/${roomId}/tasks`, {
           user_id: "u2",
           tasks: [{ text: DEMO_TASK_U2, priority: "must" }],
+          participant_token: peerToken,
         });
+
+        setParticipantToken(myToken);
         setIdentity(next);
         setState((prev) => joinLocal(prev, next));
       })();
@@ -204,14 +241,25 @@ export function useLiveRoom(roomId: string): Room {
 
   const approve = useCallback(
     (userId: string, approved: boolean) => {
-      void postJSON(`/rooms/${roomId}/plan/approve`, { user_id: userId, approved });
+      void postJSON(`/rooms/${roomId}/plan/approve`, {
+        user_id: userId,
+        approved,
+        // Only known for the local user — the demo peer's approval (if
+        // ever triggered from this client) would need its own token,
+        // which this hook doesn't expose outside join().
+        participant_token: userId === LOCAL_USER_ID ? myTokenRef.current : undefined,
+      });
     },
     [roomId],
   );
 
   const send = useCallback(
     (content: string) => {
-      void postJSON(`/rooms/${roomId}/messages`, { user_id: LOCAL_USER_ID, content });
+      void postJSON(`/rooms/${roomId}/messages`, {
+        user_id: LOCAL_USER_ID,
+        content,
+        participant_token: myTokenRef.current,
+      });
     },
     [roomId],
   );
@@ -250,5 +298,6 @@ export function useLiveRoom(roomId: string): Room {
     select: setSelected,
     approve,
     send,
+    participantToken,
   };
 }

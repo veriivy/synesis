@@ -6,60 +6,105 @@ tasking/ticketing/execution slice built on `feature/Shawn_orchestrator_backend`)
 into one. Read this before picking up more work so effort doesn't duplicate or
 drift from what's actually there.
 
-**Update, same branch, teammates asleep:** items 4 (Mongo) and 5 (BYO keys)
-below are now done — see their sections for what that does and doesn't cover.
-Item 2 (merge the PR) is **still not done** and needs a human: Claude Code's
-own auto-mode safety classifier refused the merge command outright ("Merge
-Without Review") when asked to do it unattended. That's a deliberate guardrail
-this session isn't overriding — merge via GitHub's UI, or locally, when
-someone's actually looking at the diff.
+**Update:** items 2 (merge), 4 (Mongo), and 5 (BYO keys) below are all done —
+`feature/Shawn_orchestrator_backend` was merged into `main` via PR #2. `main`
+was re-verified after the merge: 42/42 tests pass, web lint/build/reducer-check
+all clean.
+
+**Update 2:** item 0's security finding is **fixed**, committed directly to
+`main` — `POST /participants` now issues a `participant_token` on first join;
+`/participants` (re-registration), `/tasks`, `/messages`, and `/plan/approve`
+all require it to act as an already-claimed `user_id`. 7 new regression tests
+(`orchestrator/tests/test_participant_auth.py`) cover the exact exploit steps
+from the review — re-verified the literal attack is blocked over a real
+socket too. Web (`useLiveRoom.ts`, `app/live/page.tsx`) updated to carry the
+token through; lint/build/`check:reducer` all still pass. 49/49 backend tests
+pass.
+
+**Update 3:** item 1 (no browser click-through) is **done** — not by a human,
+but for real: no live browser was available, so `uvicorn` + `next dev` +
+headless Playwright drove `/dev`, `/live`, and `/` end to end (join, task
+intake, negotiate, round loop with a mid-round user interjection, approve,
+tickets, execute, file selection, the participant_token fix from Update 2).
+Found and fixed 2 real bugs this way: a hydration mismatch on `/dev` (a
+synthetic timestamp computed differently during SSR vs. client hydration),
+and the demo peer showing as the literal string `"u2"` instead of a name on
+`/live`. Zero console errors after fixing both, on all three pages. The
+rejected-write demo beat (CLAUDE.md's "single best moment") was confirmed
+rendering correctly: `middleware.py` stays unwritten, `jwt.py` shows the real
+content. **What this still doesn't cover:** a real negotiation's actual
+render — no API keys are configured in this environment, so `/live`'s
+negotiate call fails immediately (gracefully — confirmed the error renders
+cleanly, not a hang) rather than showing real `poa_generated`/`analysis`
+content. `/dev`'s fixture replay and `/`'s fixture replay both DO show that
+full render (pre-recorded, not from a real model), so the rendering code
+itself is proven; only "a real model's actual output renders correctly" is
+still unverified — needs item 5's caveat (real keys) resolved together with
+this one.
 
 ## Where things stand
 
-**On `main` (merged, working):**
+**On `main` (merged, working — PR #2 landed):**
 - Real Gemini (a1) / ChatGPT (a2) / IFM-K2 negotiation loop — `providers.py`,
   `agents.py`, `k2.py`
 - Web frontend — fixture-driven `/` and `/dev` pages, fully working
-  reducer/event-sourcing architecture (`web/lib/roomReducer.ts`)
-
-**On `feature/Shawn_orchestrator_backend` (pushed, PR open, not yet merged):**
-- The full endpoint contract wired onto that real loop: task intake,
+  reducer/event-sourcing architecture (`web/lib/roomReducer.ts`), plus
+  `web/app/live` — a real page that talks to the real backend over SSE
+- The full endpoint contract wired onto the negotiation loop: task intake,
   `FinalPlan` building, the disjoint-file-ownership validator, ticket
   decomposition, `write_file` enforcement, execution
-- `web/app/live` — a real page that talks to the real backend over SSE, not
-  fixtures
 - MongoDB Atlas persistence (`orchestrator/db.py`) — every SSE event durably
   recorded, a room snapshot saved at each milestone, entirely optional
   (no-ops without `MONGODB_URI`)
-- BYO provider keys actually threaded through (`main._agent_provider_and_key`)
-  — a participant's own `provider` + `api_key` from `POST /participants` now
+- BYO provider keys threaded through (`main._agent_provider_and_key`) — a
+  participant's own `provider` + `api_key` from `POST /participants` now
   reaches `agents.draft_poa`/`revise_poa`'s `providers.chat` call, instead of
   always using the server's static `AGENT_A1_PROVIDER`/`AGENT_A2_PROVIDER` +
   env key
-- 42 passing tests, verified manually end-to-end over a real socket
+- 49 passing tests (42 at merge + 7 more from the participant_token fix,
+  "Update 2" above); web lint/build/`check:reducer` all clean — both
+  re-verified against `main` after the merge, not just the feature branch
 
 **Net effect:** the project has gone from "two people have written
-negotiation logic, nobody has a runnable product" to one merge away from a
-room that goes create → join → tasks → negotiate → approve → tickets →
-execute → files, for real, with real model calls, and the core judged
-technical claim (conflict-free parallel writes, validated in code) working
-and tested.
+negotiation logic, nobody has a runnable product" to a room that goes
+create → join → tasks → negotiate → approve → tickets → execute → files, for
+real, with real model calls, and the core judged technical claim
+(conflict-free parallel writes, validated in code) working and tested — on
+`main`, not stuck on a branch.
 
 ## What's still missing before this is demo-ready
 
-1. **Nobody's clicked through it in a browser yet.** Everything above is
-   verified via curl/pytest, not by opening `/live` and watching two rounds
-   of negotiation render. This is the highest-priority next step — do it
-   before anything else, because UI bugs (a card that doesn't render
-   `poa_generated` correctly, a state transition that never fires) are
-   exactly what automated tests won't catch and what the judges will
-   actually see.
-2. **The PR still isn't merged — needs a human.** Claude Code's auto-mode
-   safety classifier blocked an unattended `git merge` outright ("Merge
-   Without Review"). Merge it via GitHub's UI (link in the PR), or locally
-   after actually reading the diff. Nothing else in this list can safely
-   build further on `main` until this happens without risking a third
-   divergence.
+0. **Security finding — fixed.** ✅ `POST /participants`, `/tasks`,
+   `/messages`, `/plan/approve` used to trust a client-supplied `user_id`
+   with no ownership check — anyone who knew a `room_id` could re-register
+   an existing `user_id` and, once BYO keys were wired in, hijack their
+   real LLM calls (redirecting billed traffic + the full negotiation
+   transcript to an attacker-controlled provider account), or spoof their
+   tasks/messages/approval. Fixed via `participant_token`: issued by
+   `POST /participants` on first join, required on every subsequent call
+   acting as that `user_id` (`orchestrator/main.py`'s `_check_owner`).
+   Regression tests for the exact exploit steps in
+   `tests/test_participant_auth.py`; re-verified blocked over a real
+   socket. Known residual scope, not fixed: a `user_id` that's never
+   joined via `/participants` stays unprotected on `/tasks`/`/messages`
+   (nothing to steal yet — this keeps the fixture-fallback demo path
+   working) — someone could pre-seed bogus tasks under a `user_id` before
+   the real person joins, though it'd be overwritten the moment they
+   submit their own. Lower severity than the fixed issue; not addressed.
+1. **Browser-tested — by an automated headless pass, not a human.** ✅
+   `/dev`, `/live`, and `/` all driven end to end via Playwright (join, task
+   intake, full round loop including a mid-round user interjection, approve,
+   tickets, execute, file selection). Found and fixed 2 real bugs this way
+   (see Update 3 above) — zero console errors afterward on all three pages.
+   **Still open: a real negotiation's actual render is unverified** — no API
+   keys are configured here, so `/live` only exercises the graceful-failure
+   path, not real `poa_generated`/`analysis` content from an actual model.
+   A human should still open `/live` at least once with real keys before
+   the live demo, since "the rendering code works" and "a real model's
+   output renders the way I expect" are different claims.
+2. **The PR is merged.** ✅ `feature/Shawn_orchestrator_backend` -> `main`
+   via PR #2. Re-verified on `main` post-merge: 42/42 tests pass, web
+   lint/build/`check:reducer` all clean.
 3. **No real multi-browser room.** `/live` hardcodes a fixed demo peer for
    u2. Fine for a solo click-through; not fine for "two developers,
    incompatible assumptions" as an actual live demo unless one person plays
@@ -91,23 +136,24 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
 "8am–11am: wire providers, confirm K2" milestone — the merge above basically
 *is* that checkpoint, done a bit more thoroughly. Next:
 
-1. **Merge the PR** (needs a human — see item 2 above).
-2. **Click through `/live` in a real browser**, both users' worth of it,
-   watch for anything that renders wrong. Fix what you find.
-3. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
+1. **Open `/live` with real API keys at least once**, now that the
+   automated pass has proven the rendering code itself works — this is
+   about verifying a real model's actual output renders the way you
+   expect (timing, content shape), which nothing so far has tested.
+2. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
    scenario is already proven to work end to end. Decide now whether the
    live demo runs on real model calls or falls back to the pre-recorded
    fixture stream if a provider hiccups mid-pitch — and rehearse the
    fallback, since "the screen never sits still" is a stated hard
    requirement.
-4. **10am–1pm mentor office hours** — go with a specific blocker, not "is
+3. **10am–1pm mentor office hours** — go with a specific blocker, not "is
    this good." Good candidates: whether it's worth spending demo setup time
    on a real Atlas URI given Mongo is now wired but unverified against a
    real cluster, or whether the Sandia framing (capability-scoped writes,
    untrusted agents) lands well as a pitch point.
-5. **1pm hard freeze, record the backup video** while everything still
+4. **1pm hard freeze, record the backup video** while everything still
    works.
-6. **2–3pm rehearse the 3-minute pitch**, out loud, on venue wifi —
+5. **2–3pm rehearse the 3-minute pitch**, out loud, on venue wifi —
    specifically the moment CLAUDE.md flags: *showing a write getting
    rejected*. That's now real and testable (`orchestrator/tests/test_execution.py`),
    so rehearse actually triggering it, not just asserting it in a test.

@@ -43,7 +43,10 @@ for exactly what that does and doesn't cover.
 
 ```
 POST /rooms
-POST /rooms/{id}/participants   x2       (first join = a1, second = a2)
+POST /rooms/{id}/participants   x2       (first join = a1, second = a2;
+                                          response carries a participant_token —
+                                          required on every subsequent call for
+                                          that user_id: /tasks, /messages, /approve)
 POST /rooms/{id}/context                 (optional)
 POST /rooms/{id}/tasks          x2       (optional — see below)
 POST /rooms/{id}/negotiate      -> 202
@@ -100,6 +103,19 @@ resolution rather than a fabricated one.
   `model_dump()` (`Field(exclude=True)`), so it can never end up in an SSE
   event or a Mongo snapshot — see `tests/test_rooms.py`'s
   `test_snapshot_never_includes_an_api_key`.
+- Participant ownership (`_check_owner` in `main.py`): a security review
+  found that `POST /participants` (and `/tasks`, `/messages`,
+  `/plan/approve`) trusted a client-supplied `user_id` outright — once BYO
+  keys made a participant record consequential (it drives a real, billed
+  outbound call), anyone who knew a `room_id` could re-register an
+  existing `user_id` and redirect that person's agent calls, or spoof
+  their tasks/messages/approval. Fixed: `POST /participants` issues a
+  `participant_token` the first time a `user_id` joins; that token is
+  required on every subsequent call acting as that `user_id` (missing or
+  wrong -> 403). A `user_id` that's never joined stays unprotected —
+  nothing to steal yet, and it keeps the fixture-fallback demo path
+  (which never calls `/participants`) working unchanged. Regression tests
+  for the exact exploit steps: `tests/test_participant_auth.py`.
 - Mongo persistence (`db.py`): every SSE event is durably recorded (the
   "transcript"), and a room snapshot is saved at each milestone
   (`room_snapshot` in `rooms.py`). Optional — unset `MONGODB_URI`, and
@@ -155,6 +171,9 @@ orchestrator/
     test_db.py            db.py's no-op behavior without MONGODB_URI
     test_byo_keys.py      provider_key_for/resolve, and that a participant's
                            own provider+key actually reaches draft_poa
+    test_participant_auth.py  the participant_token fix — regression tests
+                           for the exact identity-spoofing/key-hijack
+                           exploit steps from the security review
     test_end_to_end.py    full room lifecycle through the real app, LLM
                            calls faked at the names main.py imported them
                            under, everything else (ticketing, validator,
