@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.k2.execution import execute_room, write_file
-from app.rooms import Room
-from app.schemas import FinalPlan, Ticket
+from orchestrator.events import EventBus
+from orchestrator.execution import execute_room, write_file
+from orchestrator.rooms import Phase, Room
+from orchestrator.schemas import FinalPlan, Ticket
 
 
 def _approved_plan(plan_id: str = "plan-1") -> FinalPlan:
@@ -58,7 +59,7 @@ def test_write_file_rejects_path_outside_files_owned():
 
     assert result.accepted is False
     assert "does not own" in result.reason
-    assert "src/b.py" not in room.files or room.files["src/b.py"].last_written_by is None
+    assert "src/b.py" not in room.files
 
 
 @pytest.mark.parametrize(
@@ -104,29 +105,23 @@ async def test_execute_room_runs_parallel_tickets_and_completes_sequential_after
         _ticket("t2", ["src/b.py"], assigned_agent="a2", lane="parallel"),
         _ticket("t3", ["src/c.py"], assigned_agent="a1", lane="sequential", depends_on=["t1", "t2"]),
     ]
+    bus = EventBus()
 
-    await execute_room(room)
+    await execute_room(room, bus)
 
     assert {t.status for t in room.tickets} == {"done"}
-    assert room.status == "done"
+    assert room.phase == Phase.DONE
     for path in ("src/a.py", "src/b.py", "src/c.py"):
         assert path in room.files
         assert room.files[path].last_written_by is not None
 
-    events_by_ticket = {}
-    for e in room.bus.log:
-        if e.type == "ticket_started":
-            events_by_ticket.setdefault(e.ticket_id, []).append(("started", e))
-        if e.type == "ticket_completed":
-            events_by_ticket.setdefault(e.ticket_id, []).append(("completed", e))
+    log = bus.history(room.room_id)
     # t3 must not start until both its dependencies have completed.
-    t1_completed_index = [e.type for e in room.bus.log].index("ticket_completed")
+    first_completed_index = [e["type"] for e in log].index("ticket_completed")
     t3_started_index = next(
-        i
-        for i, e in enumerate(room.bus.log)
-        if e.type == "ticket_started" and e.ticket_id == "t3"
+        i for i, e in enumerate(log) if e["type"] == "ticket_started" and e["ticket_id"] == "t3"
     )
-    assert t3_started_index > t1_completed_index
+    assert t3_started_index > first_completed_index
 
 
 @pytest.mark.asyncio
@@ -136,7 +131,8 @@ async def test_execute_room_fails_tickets_on_a_dangling_dependency():
     room.tickets = [
         _ticket("t1", ["src/a.py"], lane="sequential", depends_on=["does-not-exist"]),
     ]
+    bus = EventBus()
 
-    await execute_room(room)
+    await execute_room(room, bus)
 
     assert room.tickets[0].status == "failed"

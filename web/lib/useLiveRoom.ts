@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SSEEvent } from "./types";
+import type { SSEEvent, SSEEventType } from "./types";
 import { initialRoomState, roomReducer, type RoomState } from "./roomReducer";
 import type { FixturePlayer } from "./useFixturePlayer";
 import { LOCAL_USER_ID, PEER_NAME, joinLocal, type Room } from "./useRoom";
@@ -9,6 +9,32 @@ import type { LocalIdentity } from "@/components/SetupModal";
 
 const ORCHESTRATOR_URL =
   process.env.NEXT_PUBLIC_ORCHESTRATOR_URL?.replace(/\/$/, "") ?? "http://localhost:8000";
+
+/**
+ * The orchestrator (orchestrator/events.py:format_sse) sends a named
+ * `event: <type>` line per frame, not the unnamed `message` events
+ * EventSource's onmessage listens for — so every type needs its own
+ * addEventListener. onmessage stays wired too (harmlessly redundant) in
+ * case that ever changes.
+ */
+const ALL_EVENT_TYPES: SSEEventType[] = [
+  "participant_joined",
+  "poa_generated",
+  "analysis",
+  "agent_message",
+  "user_message",
+  "moderator_message",
+  "round_complete",
+  "plan_proposed",
+  "approval_updated",
+  "plan_approved",
+  "context_updated",
+  "tickets_created",
+  "ticket_started",
+  "file_written",
+  "ticket_completed",
+  "error",
+];
 
 async function postJSON(path: string, body: unknown): Promise<void> {
   const res = await fetch(`${ORCHESTRATOR_URL}${path}`, {
@@ -21,10 +47,12 @@ async function postJSON(path: string, body: unknown): Promise<void> {
   }
 }
 
-/** The demo peer's requirement, deliberately worded to collide with
- * whatever file the local user's own task text slugifies to would need
- * hand-authoring to guarantee — so instead this seeds a known-colliding
- * pair by default; see DEMO_TASK_U2 usage in app/live/page.tsx. */
+/** The demo peer's requirement. The orchestrator drafts both PoAs with a
+ * real model (agents.draft_poa), so there's no guaranteed mechanical way
+ * to force a conflict the way a template stand-in could — this is worded
+ * to plausibly collide with a browser-cookie-flavored requirement typed
+ * into TaskIntake, mirroring how fixtures/PoA1.json and PoA2.json were
+ * hand-written to conflict on purpose. */
 export const DEMO_TASK_U2 =
   "Handle authentication using session cookies for the browser too.";
 
@@ -97,7 +125,8 @@ export function useLiveRoom(roomId: string): Room {
 
     const source = new EventSource(`${ORCHESTRATOR_URL}/rooms/${roomId}/stream`);
     sourceRef.current = source;
-    source.onmessage = (msg) => {
+
+    const handle = (msg: MessageEvent<string>) => {
       const event = JSON.parse(msg.data) as SSEEvent;
       setState((prev) => roomReducer(prev, event));
       setEventCount((n) => n + 1);
@@ -111,6 +140,11 @@ export function useLiveRoom(roomId: string): Room {
         void postJSON(`/rooms/${roomId}/execute`, {});
       }
     };
+
+    source.onmessage = handle;
+    for (const type of ALL_EVENT_TYPES) {
+      source.addEventListener(type, handle);
+    }
   }, [roomId, refetchFile]);
 
   useEffect(() => {
@@ -135,30 +169,35 @@ export function useLiveRoom(roomId: string): Room {
   const join = useCallback(
     (next: LocalIdentity) => {
       identityRef.current = next;
-      setIdentity(next);
-      setState((prev) => joinLocal(prev, next));
-      void postJSON(`/rooms/${roomId}/participants`, {
-        user_id: LOCAL_USER_ID,
-        display_name: next.display_name,
-        provider: next.provider,
-        model: next.model,
-        api_key: next.api_key,
-      });
-      // Phase 1: this browser is the only real client, so the peer is a
-      // fixed second participant (mirrors useRoom.ts's PEER_NAME) rather
-      // than a second real browser — true multi-browser rooms are future
-      // work, not part of wiring the stream itself.
-      void postJSON(`/rooms/${roomId}/participants`, {
-        user_id: "u2",
-        display_name: PEER_NAME,
-        provider: "gpt",
-        model: "gpt-5",
-      }).then(() =>
-        postJSON(`/rooms/${roomId}/tasks`, {
+      // The backend's /negotiate rejects a live-tasks room with fewer than
+      // 2 participants (orchestrator/main.py). Both joins — and the demo
+      // peer's task — have to land before `identity` flips and TaskIntake
+      // appears, or a fast submit can race ahead of u2's setup and 409.
+      void (async () => {
+        await postJSON(`/rooms/${roomId}/participants`, {
+          user_id: LOCAL_USER_ID,
+          display_name: next.display_name,
+          provider: next.provider,
+          model: next.model,
+          api_key: next.api_key,
+        });
+        // Phase 1: this browser is the only real client, so the peer is a
+        // fixed second participant (mirrors useRoom.ts's PEER_NAME) rather
+        // than a second real browser — true multi-browser rooms are
+        // future work, not part of wiring the stream itself.
+        await postJSON(`/rooms/${roomId}/participants`, {
+          user_id: "u2",
+          display_name: PEER_NAME,
+          provider: "gpt",
+          model: "gpt-5",
+        });
+        await postJSON(`/rooms/${roomId}/tasks`, {
           user_id: "u2",
           tasks: [{ text: DEMO_TASK_U2, priority: "must" }],
-        }),
-      );
+        });
+        setIdentity(next);
+        setState((prev) => joinLocal(prev, next));
+      })();
     },
     [roomId],
   );

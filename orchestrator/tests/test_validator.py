@@ -1,5 +1,5 @@
-from app.k2.validator import EmptyFilesOwnedError, validate_and_fix_tickets
-from app.schemas import Ticket
+from orchestrator.schemas import Ticket
+from orchestrator.validator import EmptyFilesOwnedError, validate_and_fix_tickets
 
 
 def _ticket(ticket_id: str, files: list[str], **kw) -> Ticket:
