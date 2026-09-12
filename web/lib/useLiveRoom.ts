@@ -147,7 +147,17 @@ export function useLiveRoom(roomId: string): LiveRoom {
     sourceRef.current = source;
 
     const handle = (msg: MessageEvent<string>) => {
-      const event = JSON.parse(msg.data) as SSEEvent;
+      let event = JSON.parse(msg.data) as SSEEvent;
+      // The backend's participant_joined never carries a display_name —
+      // it's not in the frozen contract (web/lib/types.ts's comment on
+      // ParticipantJoined.display_name says as much). The local user's
+      // name comes from joinLocal's direct patch instead; the demo peer
+      // (always "u2") needs the same treatment here that useRoom.ts's
+      // demoEvents mapping already applies for the fixture path, or it
+      // shows up as the bare string "u2" in the chat log and top bar.
+      if (event.type === "participant_joined" && event.user_id === "u2" && !event.display_name) {
+        event = { ...event, display_name: PEER_NAME };
+      }
       setState((prev) => roomReducer(prev, event));
       setEventCount((n) => n + 1);
 
