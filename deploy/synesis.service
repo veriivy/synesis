@@ -1,0 +1,36 @@
+# systemd unit for the Synesis API. Install to /etc/systemd/system/synesis.service
+#
+#   sudo cp deploy/synesis.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now synesis
+#   sudo systemctl status synesis
+#   sudo journalctl -u synesis -f          # live logs — your friend at 3am
+#
+# systemd rather than tmux because the demo has to survive you closing the laptop,
+# the SSH session dropping on venue wifi, and the process crashing at 4am.
+
+[Unit]
+Description=Synesis API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=synesis
+Group=synesis
+WorkingDirectory=/opt/synesis/server
+
+# Binds to localhost only. Caddy owns :443 and proxies in — nothing should reach
+# uvicorn from the outside without going through TLS first.
+ExecStart=/opt/synesis/.venv/bin/uvicorn server.main:app --host 127.0.0.1 --port 8000
+
+# No EnvironmentFile: server/config.py already loads /opt/synesis/.env through
+# python-dotenv. One loader, one format, one thing to get wrong.
+
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

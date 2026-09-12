@@ -1,0 +1,32 @@
+# Caddy config for the Synesis API. Install to /etc/caddy/Caddyfile.
+#
+# Caddy is here for exactly one reason: HTTPS. Vercel serves the frontend over
+# https, and a browser will refuse to let an https page call an http backend —
+# including the EventSource connection the whole demo depends on. Plain
+# http://<ip>:8000 will NOT work from a deployed frontend.
+#
+# Caddy gets a real Let's Encrypt certificate automatically, with no domain
+# purchase, because <your-ip>.sslip.io resolves to <your-ip>. Substitute your
+# Vultr instance's IP below (dots and all):
+#
+#     198.51.100.7.sslip.io
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo nano /etc/caddy/Caddyfile          # put your IP in
+#   sudo systemctl reload caddy
+#   sudo journalctl -u caddy -f             # watch the cert get issued
+
+REPLACE_ME.sslip.io {
+	reverse_proxy 127.0.0.1:8000 {
+		# The one line that matters for this app. Response buffering would hold
+		# SSE events until the buffer fills, so the negotiation would arrive in
+		# a clump instead of live — the exact failure the demo cannot have.
+		# Recent Caddy detects text/event-stream and does this itself; being
+		# explicit costs nothing and removes a version dependency.
+		flush_interval -1
+	}
+
+	log {
+		output file /var/log/caddy/synesis.log
+	}
+}
