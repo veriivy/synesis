@@ -138,7 +138,28 @@ def parse_file_blocks(raw: str) -> dict[str, str]:
         if path is not None:
             body.append(line)
     flush()
-    return files
+    if files:
+        return files
+    return _files_from_json(raw)
+
+
+def _files_from_json(raw: str) -> dict[str, str]:
+    """Gemini/K2 often ignore the block format and emit {"files": {...}}."""
+    try:
+        from .k2 import extract_object
+
+        data = extract_object(raw)
+    except ValueError:
+        return {}
+    blob = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(blob, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in blob.items():
+        if isinstance(key, str) and isinstance(value, str) and value.strip():
+            path = key.strip().strip("`").lstrip("./")
+            out[path] = value.rstrip() + "\n"
+    return out
 
 
 def placeholder_content(ticket: Ticket, path: str) -> str:

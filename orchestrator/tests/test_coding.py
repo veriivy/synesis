@@ -111,6 +111,11 @@ def test_parse_file_blocks_returns_nothing_for_a_response_with_no_blocks():
     assert parse_file_blocks("I cannot help with that.") == {}
 
 
+def test_parse_file_blocks_accepts_a_files_json_object():
+    raw = '{"files": {"src/auth/jwt.py": "def encode():\\n    return 1\\n"}}'
+    assert parse_file_blocks(raw) == {"src/auth/jwt.py": "def encode():\n    return 1\n"}
+
+
 # --- context building ---
 
 
