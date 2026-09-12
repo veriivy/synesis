@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from .providers import chat, moderator_provider
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures"
@@ -67,46 +66,6 @@ def extract_object(text: str) -> dict:
     raise ValueError(f"K2 did not return JSON:\n{text[:800]}")
 
 
-def ifm_settings() -> tuple[str, str, str]:
-    api_key = os.getenv("IFM_API_KEY", "").strip()
-    base_url = os.getenv("IFM_BASE_URL", "").strip()
-    model = os.getenv("IFM_MODEL", "").strip()
-    missing = [
-        name
-        for name, value in (
-            ("IFM_API_KEY", api_key),
-            ("IFM_BASE_URL", base_url),
-            ("IFM_MODEL", model),
-        )
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(
-            f"missing {', '.join(missing)} — copy .env.example to .env and fill them in"
-        )
-    return api_key, base_url, model
-
-
-def chat(*, system: str, user: str, max_tokens: int = 2048) -> str:
-    """One completion. Advocates and K2 both go through here so the model is swappable."""
-    api_key, base_url, model = ifm_settings()
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=90.0, max_retries=1)
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
-    # Some gateways want max_tokens, some want max_completion_tokens. Prefer the
-    # older name; if the gateway rejects it, retry once without a cap.
-    try:
-        resp = client.chat.completions.create(**kwargs, max_tokens=max_tokens)
-    except Exception:
-        resp = client.chat.completions.create(**kwargs)
-    return (resp.choices[0].message.content or "").strip()
-
-
 def blocking_ids(analysis: dict) -> list[str]:
     ids = []
     for diff in analysis.get("differences") or []:
@@ -151,7 +110,12 @@ def analyze(
         + extra
         + f"\n\nDiff the current positions. Round is {round_index}."
     )
-    raw = chat(system=SYSTEM, user=user, max_tokens=4096)
+    raw = chat(
+        system=SYSTEM,
+        user=user,
+        provider=moderator_provider(),
+        max_tokens=4096,
+    )
     analysis = extract_object(raw)
     analysis["round"] = round_index
     analysis.setdefault("similarities", [])

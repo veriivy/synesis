@@ -6,7 +6,8 @@
 
 Opening PoAs come from /fixtures. K2 publishes an `analysis` (humans and agents
 both see it). Each advocate then rewrites its own PoA from that comparison, in
-parallel. K2 diffs the new plans. Hard cap 3 rounds.
+parallel. K2 diffs the new plans. Default: 3 rounds (`MAX_ROUNDS` in .env).
+a1 is Claude, a2 is GPT, moderator is K2 — missing keys fall back to IFM.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from .agents import revise_poa
 from .events import EventBus, utc_now
 from .k2 import analyze, blocking_ids, has_converged, load_fixture
+from .providers import provider_status
 from .rooms import Phase, Room, RoomStore
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -35,6 +37,11 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 MAX_ROUNDS = int(os.getenv("MAX_ROUNDS", "3") or "3")
+STOP_ON_CONVERGE = os.getenv("STOP_ON_CONVERGE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 bus = EventBus()
 rooms = RoomStore()
@@ -42,7 +49,12 @@ rooms = RoomStore()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    log.info("orchestrator up — POST /rooms, then POST /rooms/{id}/negotiate")
+    log.info(
+        "orchestrator up — max_rounds=%s stop_on_converge=%s providers=%s",
+        MAX_ROUNDS,
+        STOP_ON_CONVERGE,
+        provider_status(),
+    )
     yield
 
 
@@ -63,7 +75,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "rooms": len(rooms)}
+    return {
+        "ok": True,
+        "rooms": len(rooms),
+        "max_rounds": MAX_ROUNDS,
+        "stop_on_converge": STOP_ON_CONVERGE,
+        "providers": provider_status(),
+    }
 
 
 @app.post("/rooms")
@@ -143,11 +161,12 @@ async def _run_loop(room: Room) -> None:
             )
             await bus.publish(room.room_id, _publish_analysis(room.room_id, analysis))
 
-            if has_converged(analysis) or not blocking_ids(analysis):
+            last_round = round_index >= MAX_ROUNDS
+            if STOP_ON_CONVERGE and (has_converged(analysis) or not blocking_ids(analysis)):
                 log.info("room %s converged at round %d", room.room_id, round_index)
                 break
-            if round_index == MAX_ROUNDS:
-                log.info("room %s hit round cap with blocking diffs", room.room_id)
+            if last_round:
+                log.info("room %s finished %d rounds", room.room_id, MAX_ROUNDS)
                 break
 
             replies = await asyncio.gather(

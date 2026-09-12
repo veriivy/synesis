@@ -10,7 +10,8 @@ import json
 import re
 from typing import Any
 
-from .k2 import chat, extract_object
+from .k2 import extract_object
+from .providers import agent_provider, chat
 
 ADVOCATE_SYSTEM = """\
 You are {agent_id}, the engineering advocate for {display_name} (user id `{user_id}`).
@@ -146,7 +147,12 @@ def revise_poa(
         )
     )
     try:
-        raw = chat(system=system, user=user, max_tokens=4096)
+        raw = chat(
+            system=system,
+            user=user,
+            provider=agent_provider(agent_id),
+            max_tokens=4096,
+        )
         data = extract_object(raw)
         content = str(data.get("content") or "").strip() or "(revised plan, no speech)"
         addressed = data.get("addresses_issues")
