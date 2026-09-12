@@ -1,9 +1,12 @@
-"""In-memory rooms. Mongo can mirror later; this is enough to run the K2 slice.
+"""In-memory rooms — the live, authoritative state a running negotiation
+or execution actually operates on. db.py mirrors a snapshot of this into
+Mongo at a few milestones (see room_snapshot below) for durability, but
+the asyncio.Task driving a room is still gone on restart; see db.py's
+module docstring for exactly what that does and doesn't buy you.
 
 Extends the original Room (room_id/phase/task) with what the tasking
 endpoints, ticket decomposition, and execution need: participants, task
-intake, the negotiated FinalPlan, tickets, and the workspace files. Nothing
-here is persisted — gone on restart, same as before.
+intake, the negotiated FinalPlan, tickets, and the workspace files.
 """
 
 from __future__ import annotations
@@ -59,6 +62,12 @@ class Room:
     # to give K2's prompt a hint a real model could otherwise infer from
     # the plan's own rationale text.
     step_owner: dict[str, str] = field(default_factory=dict)
+    # agent_id -> user_id, set once opening PoAs exist (main.py — works
+    # for both the live-tasks path and the fixture-fallback path, since
+    # both always produce a poa1/poa2 with agent_id/user_id). BYO key
+    # threading (main.py's _agent_provider_and_key) uses this to find
+    # which participant, if any, owns a given agent.
+    agent_users: dict[str, str] = field(default_factory=dict)
 
     # Ticket decomposition + execution.
     tickets: list[Ticket] = field(default_factory=list)
@@ -84,6 +93,32 @@ class Room:
                 for user_id, tasks in self.tasks_by_user.items()
             ],
         }
+
+
+def room_snapshot(room: Room) -> dict:
+    """A Mongo-ready snapshot of `room`'s durable state — no asyncio.Task,
+    no lock, and (via Participant.api_key's Field(exclude=True)) never an
+    api_key. Called from main.py at each milestone; see db.save_room."""
+    return {
+        "room_id": room.room_id,
+        "phase": room.phase.value,
+        "participants": {
+            user_id: p.model_dump() for user_id, p in room.participants.items()
+        },
+        "project_context": room.project_context,
+        "context_version": room.context_version,
+        "tasks_by_user": {
+            user_id: [t.model_dump() for t in tasks]
+            for user_id, tasks in room.tasks_by_user.items()
+        },
+        "current_round": room.current_round,
+        "plan": room.plan.model_dump() if room.plan else None,
+        "tickets": [t.model_dump() for t in room.tickets],
+        "files": {
+            path: {"content": f.content, "last_written_by": f.last_written_by}
+            for path, f in room.files.items()
+        },
+    }
 
 
 class RoomStore:

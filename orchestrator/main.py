@@ -42,12 +42,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from . import db
 from .agents import draft_poa, revise_poa
 from .events import EventBus, utc_now
 from .execution import execute_room
 from .k2 import analyze, blocking_ids, has_converged, load_fixture
-from .providers import provider_status
-from .rooms import Phase, Room, RoomStore
+from .providers import provider_key_for, provider_status
+from .rooms import Phase, Room, RoomStore, room_snapshot
 from .schemas import FinalPlan, Participant, Provider as ProviderName, Resolution, Step, Task, Ticket
 from .ticketing import decompose_tickets
 from .workspace import file_tree
@@ -116,6 +117,7 @@ async def health() -> dict:
 @app.post("/rooms")
 async def create_room() -> dict:
     room = rooms.create()
+    await db.save_room(room_snapshot(room))
     return {"room_id": room.room_id}
 
 
@@ -285,6 +287,7 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
         room_id,
         {"type": "tickets_created", "tickets": [t.model_dump() for t in result.tickets], "ts": utc_now()},
     )
+    await db.save_room(room_snapshot(room))
     return {"ok": True}
 
 
@@ -307,6 +310,8 @@ async def execute(room_id: str) -> dict:
             log.exception("execute failed for %s", room_id)
             room.phase = Phase.FAILED
             await bus.publish(room_id, {"type": "error", "where": "execute", "detail": str(exc), "ts": utc_now()})
+        finally:
+            await db.save_room(room_snapshot(room))
 
     room.execute_task = asyncio.create_task(_run())
     return {"ok": True}
@@ -338,16 +343,35 @@ def _publish_analysis(analysis: dict) -> dict:
     }
 
 
+def _agent_provider_and_key(room: Room, agent_id: str) -> tuple[str | None, str | None]:
+    """BYO threading (CLAUDE.md: "Keys: BYO with server fallback"). If the
+    participant who owns `agent_id` (Room.agent_users) joined with a
+    provider choice, use it — and their pasted api_key if they gave one —
+    instead of the static AGENT_A1_PROVIDER/AGENT_A2_PROVIDER env default.
+    Returns (None, None) when there's no such participant, so callers fall
+    through to providers.agent_provider(agent_id) unchanged.
+    """
+    user_id = room.agent_users.get(agent_id)
+    participant = room.participants.get(user_id) if user_id else None
+    if participant is None:
+        return None, None
+    return provider_key_for(participant.provider), participant.api_key
+
+
 def _draft_opening_poas(room: Room) -> tuple[dict, dict, dict]:
     """Live path: both agents draft from the room's own submitted tasks.
     Agent id assignment is by join order — the first participant is a1,
-    the second a2 — independent of which real provider (Gemini/GPT/Claude)
-    ends up serving that seat; see providers.agent_provider."""
+    the second a2. Which real provider serves each seat is resolved by
+    _agent_provider_and_key (the participant's own BYO choice) with
+    providers.agent_provider's static env default as the fallback."""
     user_ids = list(room.participants.keys())
     a1_user, a2_user = user_ids[0], user_ids[1]
+    room.agent_users = {"a1": a1_user, "a2": a2_user}
     tasks = room.tasks_payload()
-    poa1 = draft_poa(agent_id="a1", user_id=a1_user, tasks=tasks)
-    poa2 = draft_poa(agent_id="a2", user_id=a2_user, tasks=tasks)
+    provider1, key1 = _agent_provider_and_key(room, "a1")
+    provider2, key2 = _agent_provider_and_key(room, "a2")
+    poa1 = draft_poa(agent_id="a1", user_id=a1_user, tasks=tasks, provider=provider1, api_key=key1)
+    poa2 = draft_poa(agent_id="a2", user_id=a2_user, tasks=tasks, provider=provider2, api_key=key2)
     context = {"room_id": room.room_id, "project_context": room.project_context}
     return context, poa1, poa2
 
@@ -414,6 +438,10 @@ async def _run_loop(room: Room) -> None:
             poa2 = load_fixture("PoA2.json")
             context = load_fixture("context.json")
             tasks = load_fixture("tasks.json")
+            room.agent_users = {
+                str(poa1.get("agent_id")): str(poa1.get("user_id")),
+                str(poa2.get("agent_id")): str(poa2.get("user_id")),
+            }
 
         for poa in (poa1, poa2):
             await bus.publish(
@@ -451,12 +479,26 @@ async def _run_loop(room: Room) -> None:
                 log.info("room %s finished %d rounds", room.room_id, MAX_ROUNDS)
                 break
 
+            provider1, key1 = _agent_provider_and_key(room, "a1")
+            provider2, key2 = _agent_provider_and_key(room, "a2")
             replies = await asyncio.gather(
                 asyncio.to_thread(
-                    revise_poa, poa=poa1, tasks=tasks, analysis=analysis, round_index=round_index
+                    revise_poa,
+                    poa=poa1,
+                    tasks=tasks,
+                    analysis=analysis,
+                    round_index=round_index,
+                    provider=provider1,
+                    api_key=key1,
                 ),
                 asyncio.to_thread(
-                    revise_poa, poa=poa2, tasks=tasks, analysis=analysis, round_index=round_index
+                    revise_poa,
+                    poa=poa2,
+                    tasks=tasks,
+                    analysis=analysis,
+                    round_index=round_index,
+                    provider=provider2,
+                    api_key=key2,
                 ),
             )
             by_id = {reply["agent_id"]: reply for reply in replies}
@@ -507,6 +549,7 @@ async def _run_loop(room: Room) -> None:
         room.plan = plan
         room.phase = Phase.AWAITING_APPROVAL
         await bus.publish(room.room_id, {"type": "plan_proposed", "plan": plan.model_dump(), "ts": utc_now()})
+        await db.save_room(room_snapshot(room))
     except Exception as exc:  # noqa: BLE001 — a crashed room must still report
         log.exception("negotiate failed for %s", room.room_id)
         room.phase = Phase.FAILED

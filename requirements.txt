@@ -15,6 +15,15 @@ uvicorn>=0.32
 # decomposition + disjoint-ownership validator slice.
 pydantic>=2.6
 
+# MongoDB Atlas persistence (orchestrator/db.py) — the transcript (every
+# SSE event) and room snapshots. Async driver: orchestrator is already an
+# async FastAPI app, and unlike the LLM calls this runs on every event, so
+# threading it (asyncio.to_thread + sync pymongo) would add overhead the
+# occasional LLM call doesn't need to pay. dnspython is required for
+# mongodb+srv:// URIs, which is what Atlas hands out.
+motor>=3.5
+dnspython>=2.6
+
 # Tests. Run `pytest` from the repo root (orchestrator/ has no __init__-less
 # top level, so imports resolve as `orchestrator.xxx`).
 pytest>=8.0
