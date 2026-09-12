@@ -40,7 +40,9 @@ def _slug(text: str) -> str:
     return "-".join(words) or "task"
 
 
-def fake_draft_poa(*, agent_id: str, user_id: str, tasks: dict) -> dict:
+def fake_draft_poa(
+    *, agent_id: str, user_id: str, tasks: dict, provider: str | None = None, api_key: str | None = None
+) -> dict:
     entry = next(
         (e for e in tasks.get("tasks_by_user", []) if e.get("user_id") == user_id), None
     )
@@ -90,7 +92,15 @@ def fake_analyze(*, context, tasks, poa1: dict, poa2: dict, round_index: int, tr
     }
 
 
-def fake_revise_poa(*, poa: dict, tasks, analysis: dict, round_index: int) -> dict:
+def fake_revise_poa(
+    *,
+    poa: dict,
+    tasks,
+    analysis: dict,
+    round_index: int,
+    provider: str | None = None,
+    api_key: str | None = None,
+) -> dict:
     priority_by_path: dict[str, str] = {}
     for s in poa["steps"]:
         pr = "must" if "must-have" in s["rationale"] else "want"

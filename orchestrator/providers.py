@@ -106,11 +106,29 @@ def agent_provider(agent_id: str) -> str:
     return raw
 
 
-def resolve(provider_key: str) -> str:
-    """Return a provider we can actually call. Missing keys fall back to IFM."""
-    aliases = {"gemini": "google", "gpt": "openai", "claude": "anthropic", "k2": "ifm"}
-    wanted = aliases.get(provider_key, provider_key)
-    wanted = wanted if wanted in PROVIDERS else "ifm"
+PROVIDER_ALIASES = {"gemini": "google", "gpt": "openai", "claude": "anthropic", "k2": "ifm"}
+
+
+def provider_key_for(name: str) -> str:
+    """Map a self-reported provider name (schemas.Provider: "claude" /
+    "gemini" / "gpt", or one of PROVIDERS' own keys) to a PROVIDERS key.
+    Unrecognized names fall through to "ifm" — the same "can't call what
+    we don't have" fallback resolve() uses, just without the has_key
+    check (a BYO key makes that check meaningless: if a caller has a key
+    for a provider, that's reason enough to trust the name)."""
+    wanted = PROVIDER_ALIASES.get(name, name)
+    return wanted if wanted in PROVIDERS else "ifm"
+
+
+def resolve(provider_key: str, api_key: str | None = None) -> str:
+    """Return a provider we can actually call. A caller-supplied api_key
+    (BYO — CLAUDE.md's "Keys: BYO with server fallback") is trusted
+    outright: if the caller has a key, that's the provider to use, no
+    server-side has_key check needed. Otherwise, missing keys fall back
+    to IFM."""
+    wanted = provider_key_for(provider_key)
+    if api_key:
+        return wanted
     if has_key(wanted):
         return wanted
     if wanted != "ifm" and has_key("ifm"):
@@ -136,9 +154,11 @@ def provider_status() -> dict[str, object]:
     }
 
 
-def _openai_complete(cfg: Provider, *, system: str, user: str, max_tokens: int) -> str:
+def _openai_complete(
+    cfg: Provider, *, system: str, user: str, max_tokens: int, api_key: str | None = None
+) -> str:
     client = OpenAI(
-        api_key=api_key_for(cfg.key),
+        api_key=api_key or api_key_for(cfg.key),
         base_url=base_url_for(cfg.key),
         timeout=90.0,
         max_retries=1,
@@ -159,10 +179,12 @@ def _openai_complete(cfg: Provider, *, system: str, user: str, max_tokens: int) 
     return (resp.choices[0].message.content or "").strip()
 
 
-def _anthropic_complete(cfg: Provider, *, system: str, user: str, max_tokens: int) -> str:
+def _anthropic_complete(
+    cfg: Provider, *, system: str, user: str, max_tokens: int, api_key: str | None = None
+) -> str:
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key_for(cfg.key), timeout=90.0)
+    client = anthropic.Anthropic(api_key=api_key or api_key_for(cfg.key), timeout=90.0)
     resp = client.messages.create(
         model=model_for(cfg.key),
         max_tokens=max_tokens,
@@ -177,23 +199,39 @@ def _anthropic_complete(cfg: Provider, *, system: str, user: str, max_tokens: in
     return "\n".join(parts).strip()
 
 
-def _complete(cfg: Provider, *, system: str, user: str, max_tokens: int) -> str:
+def _complete(
+    cfg: Provider, *, system: str, user: str, max_tokens: int, api_key: str | None = None
+) -> str:
     if cfg.kind == "anthropic":
-        return _anthropic_complete(cfg, system=system, user=user, max_tokens=max_tokens)
-    return _openai_complete(cfg, system=system, user=user, max_tokens=max_tokens)
+        return _anthropic_complete(cfg, system=system, user=user, max_tokens=max_tokens, api_key=api_key)
+    return _openai_complete(cfg, system=system, user=user, max_tokens=max_tokens, api_key=api_key)
 
 
-def chat(*, system: str, user: str, provider: str = "ifm", max_tokens: int = 2048) -> str:
+def chat(
+    *,
+    system: str,
+    user: str,
+    provider: str = "ifm",
+    max_tokens: int = 2048,
+    api_key: str | None = None,
+) -> str:
     """One completion. Pass provider='google' | 'openai' | 'anthropic' | 'ifm'.
 
+    `api_key` is CLAUDE.md's BYO clause: when a room participant pasted
+    their own key (Room.participants[user_id].api_key), main.py threads it
+    through here instead of relying on the server's env key for that
+    provider. It is never logged, never persisted (Participant.api_key is
+    excluded from model_dump()), and used only for this one call.
+
     Auth/quota failures on Claude/GPT/Gemini retry once on IFM so a round still
-    produces a revised plan instead of echoing the old one.
+    produces a revised plan instead of echoing the old one — a bad BYO key
+    fails the same way a missing server key would.
     """
-    key = resolve(provider)
+    key = resolve(provider, api_key)
     cfg = PROVIDERS[key]
-    log.info("chat provider=%s model=%s", key, model_for(key))
+    log.info("chat provider=%s model=%s byo_key=%s", key, model_for(key), bool(api_key))
     try:
-        return _complete(cfg, system=system, user=user, max_tokens=max_tokens)
+        return _complete(cfg, system=system, user=user, max_tokens=max_tokens, api_key=api_key)
     except Exception as exc:
         if key == "ifm":
             raise

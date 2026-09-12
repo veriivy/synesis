@@ -116,8 +116,15 @@ def revise_poa(
     tasks: Any,
     analysis: dict,
     round_index: int,
+    provider: str | None = None,
+    api_key: str | None = None,
 ) -> dict:
-    """Revise one PoA from K2's comparison. Blocking — call from asyncio.to_thread."""
+    """Revise one PoA from K2's comparison. Blocking — call from asyncio.to_thread.
+
+    `provider`/`api_key` override agent_provider(agent_id)'s static env
+    default — main.py passes the room's own BYO choice (Room.agent_users
+    + Room.participants[user_id].provider/.api_key) when there is one.
+    """
     agent_id = str(poa.get("agent_id") or "")
     user_id = str(poa.get("user_id") or "")
     display, reqs = _user_block(tasks, user_id)
@@ -150,8 +157,9 @@ def revise_poa(
         raw = chat(
             system=system,
             user=user,
-            provider=agent_provider(agent_id),
+            provider=provider or agent_provider(agent_id),
             max_tokens=4096,
+            api_key=api_key,
         )
         data = extract_object(raw)
         content = str(data.get("content") or "").strip() or "(revised plan, no speech)"
@@ -200,11 +208,20 @@ Return JSON only, no markdown:
 """
 
 
-def draft_poa(*, agent_id: str, user_id: str, tasks: Any) -> dict:
+def draft_poa(
+    *,
+    agent_id: str,
+    user_id: str,
+    tasks: Any,
+    provider: str | None = None,
+    api_key: str | None = None,
+) -> dict:
     """The opening PoA for one agent, drafted from that user's own
     submitted tasks alone. CLAUDE.md step 2: "Generate both PoAs in
     parallel" — this is the call main.py makes twice, via
     asyncio.to_thread, before the round loop (revise_poa above) starts.
+
+    `provider`/`api_key`: see revise_poa's docstring — same BYO override.
     """
     display, reqs = _user_block(tasks, user_id)
     system = DRAFT_SYSTEM.format(
@@ -215,8 +232,9 @@ def draft_poa(*, agent_id: str, user_id: str, tasks: Any) -> dict:
         raw = chat(
             system=system,
             user="Draft the opening PoA now.",
-            provider=agent_provider(agent_id),
+            provider=provider or agent_provider(agent_id),
             max_tokens=4096,
+            api_key=api_key,
         )
         data = extract_object(raw)
         poa = _normalize_poa(data, seed, round_index=0)
