@@ -1,0 +1,88 @@
+{
+  "_comment": "The `plan` field is the full workplan object — identical in shape to workplan.json. Inlined here so the event is self-contained; the frontend must not have to fetch the plan separately.",
+  "type": "plan_proposed",
+  "room_id": "room_demo",
+  "plan": {
+    "plan_id": "plan_demo_01",
+    "repo": {
+      "url": "https://github.com/synesis-demo/notes-api",
+      "commit": "a3f19c2e6b1d4f8a7c05e3b92d6f1a48c7e0b5d3"
+    },
+    "rounds_used": 2,
+    "status": "proposed",
+    "tasks": [
+      {
+        "task_id": "t1",
+        "title": "Opaque token issuance and revocable token store",
+        "description": "POST /auth/login and /auth/logout. Random 256-bit opaque token, SHA-256 hash stored locally with user_id and expiry. Logout deletes the row (r2). No external IdP (r1).",
+        "owner_agent": "claude",
+        "owner_user": "u1",
+        "files_owned": ["src/auth/tokens.py", "src/auth/store.py", "tests/test_auth_tokens.py"],
+        "depends_on": []
+      },
+      {
+        "task_id": "t2",
+        "title": "Bearer-header auth middleware",
+        "description": "Token from Authorization: Bearer, never a cookie (r5). Resolves via authenticate_user, attaches User to request, 401 on miss.",
+        "owner_agent": "gpt",
+        "owner_user": "u2",
+        "files_owned": ["src/auth/middleware.py", "tests/test_auth_middleware.py"],
+        "depends_on": ["t1"]
+      },
+      {
+        "task_id": "t3",
+        "title": "Scope note routes to the authenticated user",
+        "description": "Apply middleware to /notes, filter every query by request.user.id. Existing tests get an auth fixture, not a rewrite (r3).",
+        "owner_agent": "gpt",
+        "owner_user": "u2",
+        "files_owned": ["src/routes/notes.py", "tests/conftest.py"],
+        "depends_on": ["t2"]
+      }
+    ],
+    "interface_contracts": [
+      {
+        "contract_id": "c1",
+        "name": "authenticate_user",
+        "kind": "function",
+        "signature": "def authenticate_user(token: str) -> User | None",
+        "producer_task": "t1",
+        "consumer_tasks": ["t2"],
+        "notes": "Single lookup point. None for unknown, expired, or revoked. The middleware never inspects token format, so storage can change without touching t2."
+      },
+      {
+        "contract_id": "c2",
+        "name": "Authorization header format",
+        "kind": "http_endpoint",
+        "signature": "Authorization: Bearer <opaque-token>",
+        "producer_task": "t2",
+        "consumer_tasks": ["t3"],
+        "notes": "Header only, no cookie fallback."
+      },
+      {
+        "contract_id": "c3",
+        "name": "tokens",
+        "kind": "schema",
+        "signature": "tokens(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+        "producer_task": "t1",
+        "consumer_tasks": [],
+        "notes": "Local SQLite, indexed on token_hash, so r6's sub-5ms budget holds on a single node."
+      }
+    ],
+    "concessions": [
+      {
+        "agent": "gpt",
+        "gave_up": "Stateless JWT verification",
+        "accepted": "Opaque tokens resolved against a local store",
+        "reason": "r2 (immediate revocation) is a must-have for u1 and is unreachable with stateless JWT without a revocation list, which reintroduces the shared state r4 was avoiding."
+      },
+      {
+        "agent": "claude",
+        "gave_up": "Session cookies",
+        "accepted": "Authorization: Bearer header",
+        "reason": "r5 (no cookies on mobile) is a must-have for u2, and cookies were claude's preference rather than anything u1 stated."
+      }
+    ],
+    "unresolved": []
+  },
+  "ts": "2026-09-12T02:16:51.007Z"
+}

@@ -1,0 +1,13 @@
+# Normalise line endings so three machines don't produce whole-file diffs.
+* text=auto eol=lf
+
+# Shell scripts MUST stay LF — CRLF breaks them under WSL and on the Vultr box.
+*.sh text eol=lf
+
+# PowerShell is happier with CRLF on Windows.
+*.ps1 text eol=crlf
+
+# One event per line. A CRLF here changes the bytes the replay parser sees.
+*.jsonl text eol=lf
+
+package-lock.json -diff linguist-generated

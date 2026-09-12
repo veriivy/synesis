@@ -1,0 +1,25 @@
+# --- secrets ---
+.env
+.env.local
+*.pem
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- node ---
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- runtime scratch ---
+# Per-room clones of the demo target repo. Never commit these.
+workspaces/
+*.log

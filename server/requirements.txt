@@ -1,0 +1,18 @@
+# The engine is a sibling package, installed editable so server and engine stay in
+# lockstep without a publish step:
+#     pip install -e ../engine
+# (scripts/setup.ps1 and scripts/setup.sh do this for you.)
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-dotenv>=1.0
+
+# MongoDB Atlas (MLH prize). pymongo 4.9+ ships the async client, so no motor.
+# Optional at runtime: the server starts and demos fine without a reachable Mongo.
+pymongo>=4.9
+
+# dev
+pytest>=8.0
+pytest-asyncio>=0.23
+httpx>=0.27          # fastapi's TestClient transport

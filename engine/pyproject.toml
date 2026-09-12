@@ -1,0 +1,23 @@
+[project]
+name = "synesis-engine"
+version = "0.1.0"
+description = "Negotiation engine: advocate agents, a moderator, and a workplan"
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["engine*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# So `pytest` works the same as `python -m pytest` from this directory.
+pythonpath = [".", "tests"]
+asyncio_mode = "strict"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 95
+target-version = "py311"

@@ -1,0 +1,43 @@
+{
+  "_comment": "Two samples in one file: the accepted write, and THE REJECTION. The rejection is the demo's money shot — gpt tried to touch a file owned by claude's task t1 and the sandbox refused before a byte hit disk. Render it in red, loud, unmissable.",
+  "accepted": {
+    "type": "file_written",
+    "room_id": "room_demo",
+    "agent_id": "claude",
+    "path": "src/auth/tokens.py",
+    "bytes": 1240,
+    "accepted": true,
+    "reason": null,
+    "ts": "2026-09-12T02:31:18.204Z"
+  },
+  "rejected_not_owned": {
+    "type": "file_written",
+    "room_id": "room_demo",
+    "agent_id": "gpt",
+    "path": "src/auth/tokens.py",
+    "bytes": 0,
+    "accepted": false,
+    "reason": "path_not_owned: src/auth/tokens.py belongs to task t1 (owner claude). Agent gpt owns t2, t3: src/auth/middleware.py, src/routes/notes.py, tests/conftest.py, tests/test_auth_middleware.py.",
+    "ts": "2026-09-12T02:31:44.771Z"
+  },
+  "rejected_traversal": {
+    "type": "file_written",
+    "room_id": "room_demo",
+    "agent_id": "gpt",
+    "path": "../../../../etc/passwd",
+    "bytes": 0,
+    "accepted": false,
+    "reason": "path_escape: resolved path leaves the room workspace root.",
+    "ts": "2026-09-12T02:31:52.330Z"
+  },
+  "rejected_no_plan": {
+    "type": "file_written",
+    "room_id": "room_demo",
+    "agent_id": "claude",
+    "path": "src/auth/tokens.py",
+    "bytes": 0,
+    "accepted": false,
+    "reason": "no_approved_plan: room room_demo has no human-approved plan. Writes are refused until a human approves.",
+    "ts": "2026-09-12T02:29:01.115Z"
+  }
+}

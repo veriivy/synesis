@@ -1,0 +1,53 @@
+{
+  "_comment": "The demo input. Two users, two agents, incompatible auth assumptions. r1/r4 are the collision: 'no external services + server-side revocation' cannot coexist with 'stateless JWT'. Neither agent may concede a must-have without a human override.",
+  "room_id": "room_demo",
+  "feature": "Add user authentication to the notes API so each user only sees their own notes.",
+  "participants": [
+    {
+      "user_id": "u1",
+      "display_name": "Audrey",
+      "agent_id": "claude",
+      "provider": "anthropic",
+      "requirements": [
+        {
+          "req_id": "r1",
+          "text": "No external services. Everything runs on our own box, no Auth0, no Firebase, no hosted identity provider.",
+          "priority": "must-have"
+        },
+        {
+          "req_id": "r2",
+          "text": "A logged-out user must be logged out immediately. Revoking a session has to take effect on the very next request.",
+          "priority": "must-have"
+        },
+        {
+          "req_id": "r3",
+          "text": "Keep the existing pytest suite green. Do not rewrite the test harness.",
+          "priority": "nice-to-have"
+        }
+      ]
+    },
+    {
+      "user_id": "u2",
+      "display_name": "Sam",
+      "agent_id": "gpt",
+      "provider": "openai",
+      "requirements": [
+        {
+          "req_id": "r4",
+          "text": "Auth must be stateless. Any API node can verify a request without a shared session store, so we can scale horizontally later.",
+          "priority": "must-have"
+        },
+        {
+          "req_id": "r5",
+          "text": "The mobile client cannot use cookies. The token has to travel in an Authorization header.",
+          "priority": "must-have"
+        },
+        {
+          "req_id": "r6",
+          "text": "Auth check should add under 5ms per request.",
+          "priority": "nice-to-have"
+        }
+      ]
+    }
+  ]
+}

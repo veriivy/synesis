@@ -1,0 +1,15 @@
+# Two SDKs cover five providers.
+#   anthropic -> Claude
+#   openai    -> OpenAI, and (via base_url) xAI/Grok, IFM/K2, and Gemini's
+#                OpenAI-compatible endpoint.
+# Adding a provider is therefore a row in engine/config.py, not new code or a new
+# dependency — which is the "provider-agnostic architecture" claim in the pitch.
+anthropic>=0.70
+openai>=1.60
+
+pydantic>=2.7
+python-dotenv>=1.0
+
+# dev
+pytest>=8.0
+pytest-asyncio>=0.23
