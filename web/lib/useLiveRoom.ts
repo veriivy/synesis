@@ -102,7 +102,9 @@ export function useLiveRoom(roomId: string): LiveRoom {
   // that user_id. Held in a ref (not just state) so approve()/send() —
   // fired from user clicks, not effects — always read the current value.
   const myTokenRef = useRef<string | null>(null);
+  const peerTokenRef = useRef<string | null>(null);
   const executeTriggeredRef = useRef(false);
+  const peerApprovedRef = useRef(false);
 
   const refetchFile = useCallback(
     async (path: string) => {
@@ -142,6 +144,7 @@ export function useLiveRoom(roomId: string): LiveRoom {
   const openSource = useCallback(() => {
     sourceRef.current?.close();
     executeTriggeredRef.current = false;
+    peerApprovedRef.current = false;
 
     const source = new EventSource(`${ORCHESTRATOR_URL}/rooms/${roomId}/stream`);
     sourceRef.current = source;
@@ -164,6 +167,14 @@ export function useLiveRoom(roomId: string): LiveRoom {
       if (event.type === "file_written") {
         setSelected(event.path);
         if (event.accepted) void refetchFile(event.path);
+      }
+      if (event.type === "plan_proposed" && !peerApprovedRef.current && peerTokenRef.current) {
+        peerApprovedRef.current = true;
+        void postJSON(`/rooms/${roomId}/plan/approve`, {
+          user_id: "u2",
+          approved: true,
+          participant_token: peerTokenRef.current,
+        });
       }
       if (event.type === "tickets_created" && !executeTriggeredRef.current) {
         executeTriggeredRef.current = true;
@@ -225,6 +236,7 @@ export function useLiveRoom(roomId: string): LiveRoom {
           model: "gpt-5",
         });
         const peerToken = (peer?.participant_token as string | undefined) ?? null;
+        peerTokenRef.current = peerToken;
         await postJSON(`/rooms/${roomId}/tasks`, {
           user_id: "u2",
           tasks: [{ text: DEMO_TASK_U2, priority: "must" }],
@@ -244,10 +256,8 @@ export function useLiveRoom(roomId: string): LiveRoom {
       void postJSON(`/rooms/${roomId}/plan/approve`, {
         user_id: userId,
         approved,
-        // Only known for the local user — the demo peer's approval (if
-        // ever triggered from this client) would need its own token,
-        // which this hook doesn't expose outside join().
-        participant_token: userId === LOCAL_USER_ID ? myTokenRef.current : undefined,
+        participant_token:
+          userId === LOCAL_USER_ID ? myTokenRef.current : peerTokenRef.current,
       });
     },
     [roomId],
