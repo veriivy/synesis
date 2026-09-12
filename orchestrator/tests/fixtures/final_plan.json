@@ -1,0 +1,37 @@
+{
+  "plan_id": "plan-1",
+  "rounds_used": 2,
+  "summary": "Add rate limiting to the auth API and surface it in the login UI.",
+  "steps": [
+    {
+      "step_id": "s1",
+      "title": "Add token-bucket rate limiter middleware",
+      "description": "Implement a per-IP token bucket and wire it into the auth router.",
+      "files_touched": ["src/auth.py", "src/middleware/rate_limit.py"],
+      "rationale": "Blocking brute-force login attempts was a must-have for both users."
+    },
+    {
+      "step_id": "s2",
+      "title": "Return 429 with retry-after from auth endpoints",
+      "description": "When the limiter trips, respond 429 and include Retry-After.",
+      "files_touched": ["src/auth.py"],
+      "rationale": "Agreed compromise: user A wanted a hard block, user B wanted a retry hint."
+    },
+    {
+      "step_id": "s3",
+      "title": "Show rate-limit banner in login form",
+      "description": "Display a banner when the API returns 429.",
+      "files_touched": ["web/src/components/LoginForm.tsx"],
+      "rationale": "User B's requirement; independent of the backend change."
+    }
+  ],
+  "resolutions": [
+    {
+      "issue_id": "d1",
+      "outcome": "compromise: 429 + Retry-After instead of a silent hard block",
+      "rationale": "Satisfies both must-haves without over-blocking legitimate retries."
+    }
+  ],
+  "approvals": { "u1": true, "u2": true },
+  "status": "approved"
+}
