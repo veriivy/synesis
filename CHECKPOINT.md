@@ -19,9 +19,28 @@ all require it to act as an already-claimed `user_id`. 7 new regression tests
 from the review — re-verified the literal attack is blocked over a real
 socket too. Web (`useLiveRoom.ts`, `app/live/page.tsx`) updated to carry the
 token through; lint/build/`check:reducer` all still pass. 49/49 backend tests
-pass. Full room lifecycle (create → join → tasks → negotiate → approve →
-tickets → execute) has NOT been re-clicked-through in a browser after this
-change — still item 1 below.
+pass.
+
+**Update 3:** item 1 (no browser click-through) is **done** — not by a human,
+but for real: no live browser was available, so `uvicorn` + `next dev` +
+headless Playwright drove `/dev`, `/live`, and `/` end to end (join, task
+intake, negotiate, round loop with a mid-round user interjection, approve,
+tickets, execute, file selection, the participant_token fix from Update 2).
+Found and fixed 2 real bugs this way: a hydration mismatch on `/dev` (a
+synthetic timestamp computed differently during SSR vs. client hydration),
+and the demo peer showing as the literal string `"u2"` instead of a name on
+`/live`. Zero console errors after fixing both, on all three pages. The
+rejected-write demo beat (CLAUDE.md's "single best moment") was confirmed
+rendering correctly: `middleware.py` stays unwritten, `jwt.py` shows the real
+content. **What this still doesn't cover:** a real negotiation's actual
+render — no API keys are configured in this environment, so `/live`'s
+negotiate call fails immediately (gracefully — confirmed the error renders
+cleanly, not a hang) rather than showing real `poa_generated`/`analysis`
+content. `/dev`'s fixture replay and `/`'s fixture replay both DO show that
+full render (pre-recorded, not from a real model), so the rendering code
+itself is proven; only "a real model's actual output renders correctly" is
+still unverified — needs item 5's caveat (real keys) resolved together with
+this one.
 
 ## Where things stand
 
@@ -72,14 +91,17 @@ real, with real model calls, and the core judged technical claim
    working) — someone could pre-seed bogus tasks under a `user_id` before
    the real person joins, though it'd be overwritten the moment they
    submit their own. Lower severity than the fixed issue; not addressed.
-1. **Nobody's clicked through it in a browser yet — including after the
-   participant_token fix above.** Everything above is
-   verified via curl/pytest, not by opening `/live` and watching two rounds
-   of negotiation render. This is the highest-priority *usability* next
-   step — do it before anything else, because UI bugs (a card that doesn't
-   render `poa_generated` correctly, a state transition that never fires)
-   are exactly what automated tests won't catch and what the judges will
-   actually see.
+1. **Browser-tested — by an automated headless pass, not a human.** ✅
+   `/dev`, `/live`, and `/` all driven end to end via Playwright (join, task
+   intake, full round loop including a mid-round user interjection, approve,
+   tickets, execute, file selection). Found and fixed 2 real bugs this way
+   (see Update 3 above) — zero console errors afterward on all three pages.
+   **Still open: a real negotiation's actual render is unverified** — no API
+   keys are configured here, so `/live` only exercises the graceful-failure
+   path, not real `poa_generated`/`analysis` content from an actual model.
+   A human should still open `/live` at least once with real keys before
+   the live demo, since "the rendering code works" and "a real model's
+   output renders the way I expect" are different claims.
 2. **The PR is merged.** ✅ `feature/Shawn_orchestrator_backend` -> `main`
    via PR #2. Re-verified on `main` post-merge: 42/42 tests pass, web
    lint/build/`check:reducer` all clean.
@@ -114,10 +136,10 @@ Given CLAUDE.md's own timeline, this checkpoint lands roughly at the
 "8am–11am: wire providers, confirm K2" milestone — the merge above basically
 *is* that checkpoint, done a bit more thoroughly. Next:
 
-1. **Click through `/live` in a real browser**, both users' worth of it,
-   watch for anything that renders wrong — including that the
-   participant_token plumbing (item 0) didn't break the join/task/approve
-   flow, which hasn't been browser-tested yet, only curl/pytest.
+1. **Open `/live` with real API keys at least once**, now that the
+   automated pass has proven the rendering code itself works — this is
+   about verifying a real model's actual output renders the way you
+   expect (timing, content shape), which nothing so far has tested.
 2. **Pick and rehearse the demo room** — CLAUDE.md's own auth-cookie-vs-JWT
    scenario is already proven to work end to end. Decide now whether the
    live demo runs on real model calls or falls back to the pre-recorded
