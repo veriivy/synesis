@@ -14,14 +14,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..schemas import Ticket
+from .schemas import Ticket
 
 
 class EmptyFilesOwnedError(Exception):
     """Raised when K2 proposes a ticket with no files_owned. The caller
-    (app/k2/ticketing.py) is expected to reject and regenerate, not fix
-    this up here — an empty ownership claim isn't something code should
-    guess at."""
+    (ticketing.py) is expected to reject and regenerate, not fix this up
+    here — an empty ownership claim isn't something code should guess at."""
 
     def __init__(self, ticket_ids: list[str]):
         self.ticket_ids = ticket_ids

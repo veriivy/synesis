@@ -116,8 +116,15 @@ def revise_poa(
     tasks: Any,
     analysis: dict,
     round_index: int,
+    provider: str | None = None,
+    api_key: str | None = None,
 ) -> dict:
-    """Revise one PoA from K2's comparison. Blocking — call from asyncio.to_thread."""
+    """Revise one PoA from K2's comparison. Blocking — call from asyncio.to_thread.
+
+    `provider`/`api_key` override agent_provider(agent_id)'s static env
+    default — main.py passes the room's own BYO choice (Room.agent_users
+    + Room.participants[user_id].provider/.api_key) when there is one.
+    """
     agent_id = str(poa.get("agent_id") or "")
     user_id = str(poa.get("user_id") or "")
     display, reqs = _user_block(tasks, user_id)
@@ -150,8 +157,9 @@ def revise_poa(
         raw = chat(
             system=system,
             user=user,
-            provider=agent_provider(agent_id),
+            provider=provider or agent_provider(agent_id),
             max_tokens=4096,
+            api_key=api_key,
         )
         data = extract_object(raw)
         content = str(data.get("content") or "").strip() or "(revised plan, no speech)"
@@ -172,3 +180,69 @@ def revise_poa(
         "addresses_issues": addressed or issue_ids,
         "poa": new_poa,
     }
+
+
+DRAFT_SYSTEM = """\
+You are {agent_id}, the engineering advocate for {display_name} (user id `{user_id}`).
+You are not a neutral assistant. You represent THIS user's requirements only.
+
+THEIR REQUIREMENTS
+{requirements_block}
+
+Draft the OPENING Plan of Action for these requirements alone — you have not seen the
+other user's agent yet, and there is no K2 comparison to respond to. Be concrete: real
+file paths, one step per concern. Do not invent requirements beyond what's listed above.
+
+Return JSON only, no markdown:
+{{
+  "summary": "...",
+  "steps": [{{
+    "step_id": "s1",
+    "title": "...",
+    "description": "...",
+    "files_touched": ["src/..."],
+    "rationale": "..."
+  }}],
+  "assumptions": ["..."]
+}}
+"""
+
+
+def draft_poa(
+    *,
+    agent_id: str,
+    user_id: str,
+    tasks: Any,
+    provider: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """The opening PoA for one agent, drafted from that user's own
+    submitted tasks alone. CLAUDE.md step 2: "Generate both PoAs in
+    parallel" — this is the call main.py makes twice, via
+    asyncio.to_thread, before the round loop (revise_poa above) starts.
+
+    `provider`/`api_key`: see revise_poa's docstring — same BYO override.
+    """
+    display, reqs = _user_block(tasks, user_id)
+    system = DRAFT_SYSTEM.format(
+        agent_id=agent_id, display_name=display, user_id=user_id, requirements_block=reqs
+    )
+    seed = {"poa_id": f"poa_{agent_id}", "agent_id": agent_id, "user_id": user_id}
+    try:
+        raw = chat(
+            system=system,
+            user="Draft the opening PoA now.",
+            provider=provider or agent_provider(agent_id),
+            max_tokens=4096,
+            api_key=api_key,
+        )
+        data = extract_object(raw)
+        poa = _normalize_poa(data, seed, round_index=0)
+    except Exception as exc:  # noqa: BLE001 — a room needs SOME opening PoA to negotiate over
+        poa = {
+            **seed,
+            "summary": f"[{agent_id} could not draft an opening plan: {exc}]",
+            "steps": [],
+            "assumptions": [],
+        }
+    return poa

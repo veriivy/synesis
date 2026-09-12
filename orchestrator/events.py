@@ -6,6 +6,8 @@ import asyncio
 import json
 from collections import defaultdict
 
+from . import db
+
 
 def utc_now() -> str:
     from datetime import datetime, timezone
@@ -28,6 +30,15 @@ class EventBus:
         self._history[room_id].append(event)
         for queue in list(self._subs[room_id]):
             await queue.put(event)
+        # Durable transcript. Fire-and-forget: a slow or misconfigured
+        # Mongo must never add latency to event delivery, let alone block
+        # it — db.record_event already swallows its own failures.
+        asyncio.create_task(db.record_event(event))
+
+    def history(self, room_id: str) -> list[dict]:
+        """The event log so far, in order. Used by tests that assert on
+        what a room published without opening a real SSE connection."""
+        return list(self._history[room_id])
 
     async def stream(self, room_id: str):
         queue: asyncio.Queue = asyncio.Queue()
