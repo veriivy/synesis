@@ -1,0 +1,3 @@
+# k2mod.py talks to IFM/K2 through the OpenAI-compatible chat API.
+openai>=1.60
+python-dotenv>=1.0
