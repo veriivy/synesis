@@ -237,7 +237,7 @@ def implement_ticket_sync(
     paths: Sequence[str],
     provider: str | None = None,
     api_key: str | None = None,
-    chat_fn: Callable[..., str] = chat,
+    chat_fn: Callable[..., str] | None = None,
 ) -> TicketCode:
     """One ticket's worth of real code. Blocking — call via asyncio.to_thread.
 
@@ -246,6 +246,7 @@ def implement_ticket_sync(
     placeholder stub. A failure never propagates: a ticket that cannot be
     coded still executes and still reports honestly.
     """
+    send = chat_fn or chat
     owned_block, others_block = _ownership_blocks(ticket, all_tickets)
     system = CODER_SYSTEM.format(
         agent_id=ticket.assigned_agent, owned_block=owned_block, others_block=others_block
@@ -260,7 +261,7 @@ def implement_ticket_sync(
     last_error: str | None = None
     for attempt in (1, 2):
         try:
-            raw = chat_fn(
+            raw = send(
                 system=system,
                 user=user if attempt == 1 else user + "\n\nYour last reply could not be"
                 " parsed. Emit ONLY `=== FILE: path ===` / `=== END FILE ===` blocks.",

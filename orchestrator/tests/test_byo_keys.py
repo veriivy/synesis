@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+from orchestrator import k2 as k2_module
 from orchestrator import main as main_module
 from orchestrator.providers import provider_key_for, resolve
 from orchestrator.rooms import Room
-from orchestrator.schemas import Participant
+from orchestrator.schemas import Participant, Task
 
 
 def test_provider_key_for_maps_self_reported_names():
@@ -116,3 +117,57 @@ async def test_negotiate_threads_the_participants_byo_key_into_draft_poa(
     by_agent = {c["agent_id"]: c for c in calls}
     assert by_agent["a1"] == {"agent_id": "a1", "provider": "anthropic", "api_key": "sk-avery"}
     assert by_agent["a2"] == {"agent_id": "a2", "provider": "openai", "api_key": None}
+
+
+@pytest.mark.asyncio
+async def test_a_users_byo_key_never_reaches_the_moderator(monkeypatch):
+    """K2 is the seat WE provide. A participant's pasted key pays for their own
+    advocate and their own coder, and must never fund a moderator call.
+
+    That is structural rather than defensive — k2.analyze and
+    ticketing.decompose_tickets take no api_key parameter at all, so there is
+    nothing to pass. This pins it, because adding one later would be an easy,
+    quiet mistake: it would silently bill one user for moderating their own
+    negotiation.
+    """
+    moderator_calls: list[str | None] = []
+    agent_calls: list[str | None] = []
+
+    def recording_moderator_chat(*, system, user, provider="ifm", max_tokens=2048, api_key=None):
+        moderator_calls.append(api_key)
+        return '{"round":1,"similarities":[],"differences":[],"converged":true}'
+
+    def recording_draft_poa(*, agent_id, user_id, tasks, provider=None, api_key=None):
+        agent_calls.append(api_key)
+        return {
+            "poa_id": f"poa_{agent_id}",
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "summary": "s",
+            "steps": [],
+            "assumptions": [],
+        }
+
+    # k2.analyze resolves `chat` as a module-level name, so this reaches it.
+    monkeypatch.setattr(k2_module, "chat", recording_moderator_chat)
+    monkeypatch.setattr(main_module, "draft_poa", recording_draft_poa)
+    monkeypatch.setattr(main_module, "STOP_ON_CONVERGE", True)
+
+    room = main_module.rooms.create()
+    room.participants["u1"] = Participant(
+        user_id="u1", display_name="Avery", provider="claude", model="m", api_key="sk-avery"
+    )
+    room.participants["u2"] = Participant(
+        user_id="u2", display_name="Blair", provider="gpt", model="m", api_key="sk-blair"
+    )
+    room.tasks_by_user["u1"] = [Task(text="x", priority="must")]
+    room.tasks_by_user["u2"] = [Task(text="y", priority="must")]
+
+    await main_module._run_loop(room)
+
+    assert moderator_calls, "expected at least one moderator call"
+    assert all(key is None for key in moderator_calls), (
+        f"a user key reached the moderator: {moderator_calls}"
+    )
+    # Meanwhile the advocates did spend their own owners' keys.
+    assert sorted(k for k in agent_calls if k) == ["sk-avery", "sk-blair"]
