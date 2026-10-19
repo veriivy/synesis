@@ -24,7 +24,8 @@ Return ONE compact JSON object. No markdown, no commentary, no truncated strings
     "issue_id": "d1",
     "topic": "...",
     "positions": { "a1": "...", "a2": "..." },
-    "severity": "blocking"
+    "severity": "blocking",
+    "files": ["src/..."]
   }],
   "converged": false
 }
@@ -33,6 +34,7 @@ Rules:
 - At most 4 similarities and 4 differences. Each detail/position is ONE short sentence.
 - issue_id values are d1, d2, d3, ...
 - positions keys are the agent_ids from the PoAs.
+- files lists the paths (from the PoAs' files_touched) this difference is about. [] if none.
 - severity is "blocking" or "minor". Two must-haves colliding is blocking.
 - converged is true only if there are no blocking differences.
 - When a prior-round transcript is present, diff the LATEST PoAs, not the opening drafts.
@@ -131,6 +133,32 @@ def has_converged(analysis: dict) -> bool:
     return bool(analysis.get("converged"))
 
 
+GOAL_RULE = (
+    "\n\nThe NORTH STAR above is the room's fixed goal. On every difference, add "
+    '"goal_favors": the agent_id whose position better serves that goal, or null if '
+    "neither clearly does. Judge on merit only — it can break a deadlock, so do not "
+    "split the difference to be polite."
+)
+
+
+def _normalize_differences(analysis: dict) -> None:
+    """goal_favors and files are untrusted model output like the rest:
+    a goal_favors that isn't one of that difference's own position keys
+    becomes null, and files becomes a clean list of path strings."""
+    for diff in analysis.get("differences") or []:
+        if not isinstance(diff, dict):
+            continue
+        if "goal_favors" in diff:
+            favored = diff.get("goal_favors")
+            positions = diff.get("positions") if isinstance(diff.get("positions"), dict) else {}
+            diff["goal_favors"] = (
+                str(favored) if favored is not None and str(favored) in positions else None
+            )
+        if "files" in diff:
+            files = diff.get("files")
+            diff["files"] = [str(p) for p in files if p] if isinstance(files, list) else []
+
+
 def analyze(
     *,
     context: Any,
@@ -139,8 +167,18 @@ def analyze(
     poa2: Any,
     round_index: int = 1,
     transcript: str = "",
+    goal_block: str = "",
+    interjections: str = "",
 ) -> dict:
-    """One K2 call. Blocking — run in a thread from the FastAPI event loop."""
+    """One K2 call. Blocking — run in a thread from the FastAPI event loop.
+
+    `goal_block` is goal.goal_block(...) for this round — the room's north
+    star at this round's anchor strength, or "" if the room has none. K2
+    gets the goal but never the participants' weights: it judges on merit,
+    and influence.weigh_deadlock does the weighting in code afterwards.
+    `interjections` is interjections.for_moderator(...) — the humans'
+    messages since the last analysis, by name only, for the same reason.
+    """
     extra = ""
     if transcript.strip():
         clipped = transcript.strip()
@@ -150,7 +188,8 @@ def analyze(
             "\n\nPrior-round transcript (latest PoAs matter; ignore fluff):\n" + clipped
         )
     user = (
-        "Shared context:\n"
+        (goal_block + GOAL_RULE + "\n\n" if goal_block else "")
+        + "Shared context:\n"
         + json.dumps(context, indent=2)
         + "\n\nTask lists:\n"
         + json.dumps(tasks, indent=2)
@@ -159,6 +198,7 @@ def analyze(
         + "\n\nPoA2:\n"
         + json.dumps(poa2, indent=2)
         + extra
+        + ("\n\n" + interjections if interjections else "")
         + f"\n\nDiff the current positions. Round is {round_index}. "
         "Compact JSON only. Finish the object."
     )
@@ -194,5 +234,6 @@ def analyze(
     analysis["round"] = round_index
     analysis.setdefault("similarities", [])
     analysis.setdefault("differences", [])
+    _normalize_differences(analysis)
     analysis["converged"] = has_converged(analysis)
     return analysis

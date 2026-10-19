@@ -1,6 +1,8 @@
 """FastAPI app — CLAUDE.md's "### Orchestrator endpoints".
 
-    POST /rooms
+    POST /rooms                   -> { room_id, admin_token }
+    POST /rooms/{id}/goal         admin: the room's fixed north star (goal.py)
+    POST /rooms/{id}/weights      admin: per-user influence (influence.py)
     POST /rooms/{id}/participants
     POST /rooms/{id}/context
     POST /rooms/{id}/tasks
@@ -36,17 +38,27 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db
 from .agents import draft_poa, revise_poa
 from .events import EventBus, utc_now
 from .execution import agent_implementer, execute_room
+from .goal import Goal, anchor_strength, goal_block
+from .influence import DEFAULT_WEIGHT, MAX_WEIGHT, stance_block, weigh_deadlock
+from .interjections import (
+    MAX_INTERJECTION_CHARS,
+    Interjection,
+    for_advocate,
+    for_moderator,
+    for_transcript,
+)
 from .k2 import analyze, blocking_ids, has_converged, load_fixture
 from .providers import provider_key_for, provider_status
 from .rooms import Phase, Room, RoomStore, room_snapshot
@@ -126,6 +138,20 @@ def _check_owner(room: Room, user_id: str, token: str | None) -> None:
         raise HTTPException(403, f"invalid or missing participant_token for {user_id!r}")
 
 
+def _check_admin(room: Room, token: str | None) -> None:
+    """The room's governance (goal, weights) is set by whoever created the
+    room — they got admin_token back from POST /rooms. Without this, any
+    participant could hand themselves a 10x weight: influence a user can
+    assign to themselves is no constraint at all."""
+    if not token or not secrets.compare_digest(token, room.admin_token):
+        raise HTTPException(403, "invalid or missing admin_token for this room")
+
+
+def _check_unlocked(room: Room, what: str) -> None:
+    if room.governance_locked:
+        raise HTTPException(409, f"{what} is fixed once negotiation has started")
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -141,7 +167,49 @@ async def health() -> dict:
 async def create_room() -> dict:
     room = rooms.create()
     await db.save_room(room_snapshot(room))
-    return {"room_id": room.room_id}
+    # admin_token: returned exactly once, here. Required by /goal and
+    # /weights — the creator configures the room, participants don't.
+    return {"room_id": room.room_id, "admin_token": room.admin_token}
+
+
+class GoalIn(Goal):
+    admin_token: str | None = None
+
+
+@app.post("/rooms/{room_id}/goal")
+async def set_goal(room_id: str, body: GoalIn) -> dict:
+    """The room's north star (goal.py). Re-settable during setup so a typo
+    isn't permanent; frozen the moment negotiation starts."""
+    room = _get_room(room_id)
+    _check_admin(room, body.admin_token)
+    _check_unlocked(room, "the goal")
+    room.goal = Goal(statement=body.statement, success_criteria=body.success_criteria)
+    await bus.publish(room_id, {"type": "goal_set", "goal": room.goal.public(), "ts": utc_now()})
+    return {"goal": room.goal.public()}
+
+
+Weight = Annotated[float, Field(gt=0, le=MAX_WEIGHT)]
+
+
+class WeightsIn(BaseModel):
+    weights: dict[str, Weight]
+    admin_token: str | None = None
+
+
+@app.post("/rooms/{room_id}/weights")
+async def set_weights(room_id: str, body: WeightsIn) -> dict:
+    """Merge user_id -> weight into the room (influence.py). A user_id
+    may be weighted before it joins. Frozen once negotiation starts."""
+    room = _get_room(room_id)
+    _check_admin(room, body.admin_token)
+    _check_unlocked(room, "influence weighting")
+    room.weights.update(body.weights)
+    shares = room.user_shares()
+    await bus.publish(
+        room_id,
+        {"type": "weights_updated", "weights": dict(room.weights), "shares": shares, "ts": utc_now()},
+    )
+    return {"weights": dict(room.weights), "shares": shares}
 
 
 class ParticipantIn(BaseModel):
@@ -177,6 +245,7 @@ async def add_participant(room_id: str, body: ParticipantIn) -> dict:
             "user_id": body.user_id,
             "provider": body.provider,
             "model": body.model,
+            "weight": room.weights.get(body.user_id, DEFAULT_WEIGHT),
             "ts": utc_now(),
         },
     )
@@ -185,11 +254,18 @@ async def add_participant(room_id: str, body: ParticipantIn) -> dict:
 
 class ContextIn(BaseModel):
     project_context: str
+    admin_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/context")
 async def set_context(room_id: str, body: ContextIn) -> dict:
+    """Room configuration, same as the goal: the shared context goes into
+    every advocate's, K2's and every coder's prompt, so it used to be an
+    open prompt-injection point for anyone holding a room_id — at any time,
+    mid-execution included. Admin-only, fixed once negotiation starts."""
     room = _get_room(room_id)
+    _check_admin(room, body.admin_token)
+    _check_unlocked(room, "the shared context")
     room.context_version += 1
     room.project_context = body.project_context
     await bus.publish(
@@ -220,15 +296,28 @@ async def set_tasks(room_id: str, body: TasksIn) -> dict:
 
 class MessageIn(BaseModel):
     user_id: str
-    content: str
+    content: str = Field(max_length=MAX_INTERJECTION_CHARS)
     participant_token: str | None = None
 
 
 @app.post("/rooms/{room_id}/messages")
 async def post_message(room_id: str, body: MessageIn) -> dict:
+    """Publishes to the chat, and queues the message for the next round's
+    K2 call and both advocates (interjections.py) — but only from someone
+    who joined the room. _check_owner lets an unclaimed user_id through
+    (the token-free fixture demo path); that's tolerable for a chat line,
+    not for steering two agents, so `queued` says which one happened."""
     room = _get_room(room_id)
     _check_owner(room, body.user_id, body.participant_token)
-    room.pending_messages.append(body.content)
+    queued = body.user_id in room.participant_tokens and bool(body.content.strip())
+    if queued:
+        room.pending_messages.append(
+            Interjection(
+                user_id=body.user_id,
+                display_name=room.display_name(body.user_id),
+                content=body.content,
+            )
+        )
     await bus.publish(
         room_id,
         {
@@ -239,7 +328,7 @@ async def post_message(room_id: str, body: MessageIn) -> dict:
             "ts": utc_now(),
         },
     )
-    return {"ok": True}
+    return {"ok": True, "queued": queued}
 
 
 @app.get("/rooms/{room_id}/stream")
@@ -261,6 +350,13 @@ async def negotiate(room_id: str) -> dict:
     room = _get_room(room_id)
     if room.task is not None and not room.task.done():
         raise HTTPException(409, "negotiation already running")
+    # Re-negotiating after a REJECTED plan is the point (it resumes from the
+    # latest PoAs with the rejection notes as input). Re-negotiating an
+    # APPROVED one would swap room.plan out from under its tickets — and
+    # write_file refuses everything once the plan isn't approved, so a
+    # running execution would start failing mid-ticket.
+    if room.plan is not None and room.plan.status == "approved":
+        raise HTTPException(409, "the plan is already approved")
     if room.tasks_by_user and len(room.participants) != 2:
         raise HTTPException(409, "negotiation with live tasks needs exactly 2 participants")
     room.task = asyncio.create_task(_run_loop(room))
@@ -279,36 +375,57 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
     room = _get_room(room_id)
     if room.plan is None:
         raise HTTPException(409, "no plan proposed yet")
+    if room.task is not None and not room.task.done():
+        # A re-negotiation is about to replace this plan; a vote on the
+        # outgoing one would decompose a plan nobody is arguing over anymore.
+        raise HTTPException(409, "a negotiation is running; vote on the plan it proposes")
     _check_owner(room, body.user_id, body.participant_token)
+    if body.user_id not in room.plan.approvals:
+        # Without this, any user_id that never joined (so _check_owner lets
+        # it through) could add itself as a voter, vote no, and block the
+        # plan for good.
+        raise HTTPException(403, f"{body.user_id!r} is not an approver on this plan")
 
-    room.plan.approvals[body.user_id] = body.approved
-    await bus.publish(
-        room_id,
-        {
-            "type": "approval_updated",
-            "user_id": body.user_id,
-            "approved": body.approved,
-            "ts": utc_now(),
-        },
-    )
+    if room.plan.status == "approved":
+        if room.tickets:
+            # Idempotent, not a re-trigger: a second "yes" (a double click,
+            # the demo peer's auto-approve racing a reconnect) used to
+            # decompose again and replace room.tickets under a running
+            # execution.
+            raise HTTPException(409, "the plan is already approved")
+        # Approved but ticketing failed last time: a fresh approve retries
+        # the decomposition below without reopening the vote.
+    else:
+        room.plan.approvals[body.user_id] = body.approved
+        await bus.publish(
+            room_id,
+            {
+                "type": "approval_updated",
+                "user_id": body.user_id,
+                "approved": body.approved,
+                "ts": utc_now(),
+            },
+        )
+        if not body.approved and body.notes and body.notes.strip():
+            await _queue_rejection(room, body.user_id, body.notes.strip()[:MAX_INTERJECTION_CHARS])
 
-    if not (body.approved and room.plan.approvals and all(room.plan.approvals.values())):
-        return {"ok": True}
+        if not (body.approved and room.plan.approvals and all(room.plan.approvals.values())):
+            return {"ok": True}
 
-    # Second approval: CLAUDE.md step 5 — update shared context, then decompose.
-    room.plan.status = "approved"
-    room.phase = Phase.AWAITING_APPROVAL
-    room.context_version += 1
-    await bus.publish(room_id, {"type": "plan_approved", "plan_id": room.plan.plan_id, "ts": utc_now()})
-    await bus.publish(
-        room_id,
-        {
-            "type": "context_updated",
-            "version": room.context_version,
-            "content": room.plan.summary,
-            "ts": utc_now(),
-        },
-    )
+        # Second approval: CLAUDE.md step 5 — update shared context, then decompose.
+        room.plan.status = "approved"
+        room.phase = Phase.AWAITING_APPROVAL
+        room.context_version += 1
+        await bus.publish(room_id, {"type": "plan_approved", "plan_id": room.plan.plan_id, "ts": utc_now()})
+        await bus.publish(
+            room_id,
+            {
+                "type": "context_updated",
+                "version": room.context_version,
+                "content": room.plan.summary,
+                "ts": utc_now(),
+            },
+        )
 
     try:
         result = await asyncio.to_thread(
@@ -326,6 +443,34 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
     )
     await db.save_room(room_snapshot(room))
     return {"ok": True}
+
+
+async def _queue_rejection(room: Room, user_id: str, notes: str) -> None:
+    """A "no" with a reason used to drop the reason on the floor (`notes`
+    was accepted and never read). Now it is published as that user's chat
+    message and queued as an interjection, so the next POST /negotiate —
+    which resumes from the latest PoAs — argues against the objection. Only
+    for a verified participant, same rule as POST /messages."""
+    if user_id not in room.participant_tokens:
+        return
+    room.pending_messages.append(
+        Interjection(
+            user_id=user_id,
+            display_name=room.display_name(user_id),
+            content=notes,
+            source="rejection",
+        )
+    )
+    await bus.publish(
+        room.room_id,
+        {
+            "type": "user_message",
+            "round": max(room.current_round, 1),
+            "user_id": user_id,
+            "content": f"Rejected the plan: {notes}",
+            "ts": utc_now(),
+        },
+    )
 
 
 @app.post("/rooms/{room_id}/execute", status_code=202)
@@ -376,15 +521,32 @@ async def get_file(room_id: str, path: str) -> dict:
     return {"path": path, "content": f.content, "last_written_by": f.last_written_by}
 
 
-def _publish_analysis(analysis: dict) -> dict:
+def _publish_analysis(analysis: dict, goal_anchor: float | None = None) -> dict:
     return {
         "type": "analysis",
         "round": analysis.get("round", 1),
         "similarities": analysis.get("similarities") or [],
         "differences": analysis.get("differences") or [],
         "converged": has_converged(analysis),
+        # How hard this round leaned on the room's goal (goal.anchor_strength);
+        # null when the room has none. Lets a client show the goal fading.
+        "goal_anchor": goal_anchor,
         "ts": utc_now(),
     }
+
+
+def _goal_for(room: Room, strength: float) -> str:
+    return goal_block(room.goal, strength)
+
+
+def _stance_for(room: Room, agent_id: str) -> str:
+    """The advocate's influence section, or "" if the room never assigned
+    weights — an unweighted room prompts exactly as it did before."""
+    if not room.weights:
+        return ""
+    agent_shares = room.agent_shares()
+    user_id = room.agent_users.get(agent_id, "")
+    return stance_block(room.display_name(user_id), agent_shares.get(agent_id, 0.0), len(agent_shares))
 
 
 def _agent_provider_and_key(room: Room, agent_id: str) -> tuple[str | None, str | None]:
@@ -402,63 +564,141 @@ def _agent_provider_and_key(room: Room, agent_id: str) -> tuple[str | None, str 
     return provider_key_for(participant.provider), participant.api_key
 
 
-def _draft_opening_poas(room: Room) -> tuple[dict, dict, dict]:
+def _project_brief(room: Room, context: dict) -> str:
+    """What the advocates are shown about the project: the shared context
+    text plus the files that exist right now. They are told to name real
+    file paths; until this they had never been shown any."""
+    text = str(context.get("project_context") or context.get("content") or "").strip()
+    files = "\n".join(f"- {p}" for p in sorted(room.files))
+    parts = [text] if text else []
+    if files:
+        parts.append(f"Files in the repository now:\n{files}")
+    return "\n\n".join(parts)
+
+
+async def _draft_opening_poas(room: Room, project_brief: str) -> tuple[dict, dict]:
     """Live path: both agents draft from the room's own submitted tasks.
     Agent id assignment is by join order — the first participant is a1,
     the second a2. Which real provider serves each seat is resolved by
     _agent_provider_and_key (the participant's own BYO choice) with
-    providers.agent_provider's static env default as the fallback."""
+    providers.agent_provider's static env default as the fallback.
+
+    In parallel, each in a worker thread (CLAUDE.md step 2). This used to
+    call draft_poa twice, in sequence, directly on the event loop — two
+    blocking model calls during which every SSE stream and every request
+    to the server stalled."""
     user_ids = list(room.participants.keys())
-    a1_user, a2_user = user_ids[0], user_ids[1]
-    room.agent_users = {"a1": a1_user, "a2": a2_user}
+    room.agent_users = {"a1": user_ids[0], "a2": user_ids[1]}
     tasks = room.tasks_payload()
-    provider1, key1 = _agent_provider_and_key(room, "a1")
-    provider2, key2 = _agent_provider_and_key(room, "a2")
-    poa1 = draft_poa(agent_id="a1", user_id=a1_user, tasks=tasks, provider=provider1, api_key=key1)
-    poa2 = draft_poa(agent_id="a2", user_id=a2_user, tasks=tasks, provider=provider2, api_key=key2)
-    context = {"room_id": room.room_id, "project_context": room.project_context}
-    return context, poa1, poa2
+    goal_text = _goal_for(room, anchor_strength("draft"))
+
+    def draft(agent_id: str):
+        provider, key = _agent_provider_and_key(room, agent_id)
+        return asyncio.to_thread(
+            draft_poa,
+            agent_id=agent_id,
+            user_id=room.agent_users[agent_id],
+            tasks=tasks,
+            provider=provider,
+            api_key=key,
+            goal_block=goal_text,
+            stance_block=_stance_for(room, agent_id),
+            project_context=project_brief,
+        )
+
+    poa1, poa2 = await asyncio.gather(draft("a1"), draft("a2"))
+    return poa1, poa2
+
+
+def _files_of(poa: dict) -> set[str]:
+    return {str(p) for step in poa.get("steps") or [] for p in step.get("files_touched") or []}
 
 
 def _build_final_plan(room: Room, poa1: dict, poa2: dict, analysis: dict, rounds_used: int) -> FinalPlan:
+    # A blocking issue still open at the round cap goes through the
+    # influence tiebreak (influence.weigh_deadlock): weight share plus a
+    # bonus for the position K2 judged closer to the goal. A clear leader
+    # becomes the default; a close call stays with the humans. Either way
+    # it is only a proposal — both users still have to approve the plan.
+    agent_shares = room.agent_shares() or {"a1": 0.5, "a2": 0.5}
+    touched = {"a1": _files_of(poa1), "a2": _files_of(poa2)}
+    # agent_id -> paths taken out of its steps because a default went the
+    # other way. The merged plan contains BOTH sides' steps; without this
+    # the loser's step stays in, ticketing serializes it after the
+    # winner's, and the loser's coder writes the contested file last.
+    stripped: dict[str, set[str]] = {"a1": set(), "a2": set()}
+    resolutions: list[Resolution] = []
+    defaulted = 0
+    for diff in (analysis or {}).get("differences") or []:
+        if str(diff.get("severity", "")).lower() != "blocking":
+            continue
+        positions = diff.get("positions") or {}
+        verdict = weigh_deadlock(diff, agent_shares)
+        if verdict.winner is not None:
+            defaulted += 1
+            losers = [a for a in verdict.scores if a != verdict.winner]
+            # Only paths K2 tied to this issue AND the winner actually
+            # writes — never strip a file nobody would then implement.
+            contested = set(diff.get("files") or []) & touched.get(verdict.winner, set())
+            handed_over = []
+            for loser in losers:
+                taken = contested & touched.get(loser, set())
+                stripped.setdefault(loser, set()).update(taken)
+                if taken:
+                    handed_over.append(f"{loser} no longer writes {', '.join(sorted(taken))}")
+            outcome = (
+                f"Defaults to {verdict.winner}'s position after {rounds_used} round(s): "
+                f"{positions.get(verdict.winner, '(position not stated)')}"
+            )
+            names = [room.display_name(room.agent_users.get(a, a)) for a in losers]
+            rationale = (
+                f"Influence tiebreak — {verdict.describe(agent_shares)}. "
+                + (f"In the plan: {'; '.join(handed_over)}. " if handed_over else "")
+                + f"A default, not a mandate: {', '.join(names) or 'the other side'} can "
+                "still reject the plan."
+            )
+        else:
+            outcome = (
+                f"Unresolved after {rounds_used} round(s) — both sides held. "
+                "Needs an explicit user decision."
+            )
+            rationale = (
+                f"Final positions: {positions}. "
+                f"Influence tiebreak too close to call ({verdict.describe(agent_shares)})."
+            )
+        resolutions.append(
+            Resolution(issue_id=str(diff.get("issue_id") or ""), outcome=outcome, rationale=rationale)
+        )
+
     steps: list[Step] = []
     step_owner: dict[str, str] = {}
     for owner, poa in (("a1", poa1), ("a2", poa2)):
-        for i, raw_step in enumerate(poa.get("steps") or [], start=len(steps) + 1):
-            new_id = f"s{i}"
+        for raw_step in poa.get("steps") or []:
+            original = [str(p) for p in raw_step.get("files_touched") or []]
+            files = [p for p in original if p not in stripped.get(owner, set())]
+            if original and not files:
+                continue  # every file it touched went to the other side
+            new_id = f"s{len(steps) + 1}"
             step_owner[new_id] = owner
             steps.append(
                 Step(
                     step_id=new_id,
                     title=str(raw_step.get("title") or ""),
                     description=str(raw_step.get("description") or ""),
-                    files_touched=[str(p) for p in raw_step.get("files_touched") or []],
+                    files_touched=files,
                     rationale=str(raw_step.get("rationale") or ""),
                 )
             )
 
-    resolutions: list[Resolution] = []
-    for diff in (analysis or {}).get("differences") or []:
-        if str(diff.get("severity", "")).lower() != "blocking":
-            continue
-        resolutions.append(
-            Resolution(
-                issue_id=str(diff.get("issue_id") or ""),
-                outcome=(
-                    f"Unresolved after {rounds_used} round(s) — both sides held. "
-                    "Needs an explicit user decision."
-                ),
-                rationale=f"Final positions: {diff.get('positions')}",
-            )
-        )
-
     u1, u2 = poa1.get("user_id") or "u1", poa2.get("user_id") or "u2"
+    undecided = len(resolutions) - defaulted
     plan = FinalPlan(
         plan_id=f"plan_{room.room_id}",
         rounds_used=rounds_used,
         summary=(
             f"Merged plan from a1 ({u1}) and a2 ({u2}) after {rounds_used} round(s); "
-            f"{len(resolutions)} blocking issue(s) still need a decision."
+            f"{undecided} blocking issue(s) still need a decision"
+            + (f", {defaulted} defaulted by the influence tiebreak." if defaulted else ".")
         ),
         steps=steps,
         resolutions=resolutions,
@@ -469,41 +709,82 @@ def _build_final_plan(room: Room, poa1: dict, poa2: dict, analysis: dict, rounds
     return plan
 
 
+async def _publish_poas(room: Room, *poas: dict) -> None:
+    for poa in poas:
+        await bus.publish(
+            room.room_id,
+            {
+                "type": "poa_generated",
+                "agent_id": poa.get("agent_id"),
+                "user_id": poa.get("user_id"),
+                "poa": poa,
+                "ts": utc_now(),
+            },
+        )
+
+
 async def _run_loop(room: Room) -> None:
     room.phase = Phase.NEGOTIATING
     try:
         if room.tasks_by_user:
-            context, poa1, poa2 = _draft_opening_poas(room)
+            context = {"room_id": room.room_id, "project_context": room.project_context}
             tasks = room.tasks_payload()
         else:
             # Original demo path: no tasks submitted, negotiate on the
             # fixture PoAs exactly as before.
-            poa1 = load_fixture("PoA1.json")
-            poa2 = load_fixture("PoA2.json")
             context = load_fixture("context.json")
             tasks = load_fixture("tasks.json")
-            room.agent_users = {
-                str(poa1.get("agent_id")): str(poa1.get("user_id")),
-                str(poa2.get("agent_id")): str(poa2.get("user_id")),
-            }
+        brief = _project_brief(room, context)
 
-        for poa in (poa1, poa2):
+        if "a1" in room.poas and "a2" in room.poas:
+            # A re-negotiation (the last plan was rejected): pick the
+            # argument up where it stopped. Redrafting would throw away
+            # every concession already made and relitigate them all.
+            poa1, poa2 = room.poas["a1"], room.poas["a2"]
+            queued = len(room.pending_messages)
             await bus.publish(
                 room.room_id,
                 {
-                    "type": "poa_generated",
-                    "agent_id": poa.get("agent_id"),
-                    "user_id": poa.get("user_id"),
-                    "poa": poa,
+                    "type": "moderator_message",
+                    "round": room.current_round + 1,
+                    "content": (
+                        "Re-negotiating from the latest plans"
+                        + (f", with {queued} human interjection(s) on the table." if queued else ".")
+                    ),
                     "ts": utc_now(),
                 },
             )
+        else:
+            if room.tasks_by_user:
+                poa1, poa2 = await _draft_opening_poas(room, brief)
+            else:
+                poa1 = load_fixture("PoA1.json")
+                poa2 = load_fixture("PoA2.json")
+                room.agent_users = {
+                    str(poa1.get("agent_id")): str(poa1.get("user_id")),
+                    str(poa2.get("agent_id")): str(poa2.get("user_id")),
+                }
+            room.poas = {"a1": poa1, "a2": poa2}
+            await _publish_poas(room, poa1, poa2)
 
         transcript_parts: list[str] = []
         analysis: dict = {}
-        round_index = 0
-        for round_index in range(1, MAX_ROUNDS + 1):
+        # Round numbers keep counting across a re-negotiation, so the chat
+        # never shows two different "round 1"s — and the goal's anchor, which
+        # clamps at the last round, stays at tiebreaker strength from then on.
+        first_round = room.current_round + 1
+        last_round = room.current_round + MAX_ROUNDS
+        round_index = room.current_round
+        unseen_by_advocates: list[Interjection] = []
+        for round_index in range(first_round, last_round + 1):
             room.current_round = round_index
+            # Step 3a: everything the humans said since the last drain is
+            # input to THIS round — K2's diff and both advocates' revisions.
+            batch = room.drain_interjections()
+            # The goal's pull weakens round over round (goal.anchor_strength):
+            # the agents lean on it hardest while plans are still abstract.
+            anchor = anchor_strength("negotiate", round_index, MAX_ROUNDS)
+            goal_text = _goal_for(room, anchor)
             analysis = await asyncio.to_thread(
                 analyze,
                 context=context,
@@ -512,44 +793,49 @@ async def _run_loop(room: Room) -> None:
                 poa2=poa2,
                 round_index=round_index,
                 transcript="\n\n".join(transcript_parts),
+                goal_block=goal_text,
+                interjections=for_moderator(batch),
             )
-            await bus.publish(room.room_id, _publish_analysis(analysis))
+            await bus.publish(
+                room.room_id, _publish_analysis(analysis, anchor if room.goal else None)
+            )
 
-            last_round = round_index >= MAX_ROUNDS
-            if STOP_ON_CONVERGE and (has_converged(analysis) or not blocking_ids(analysis)):
-                log.info("room %s converged at round %d", room.room_id, round_index)
-                break
-            if last_round:
-                log.info("room %s finished %d rounds", room.room_id, MAX_ROUNDS)
+            stop = STOP_ON_CONVERGE and (has_converged(analysis) or not blocking_ids(analysis))
+            if stop or round_index >= last_round:
+                log.info("room %s stopped at round %d", room.room_id, round_index)
+                # No advocate turn follows, so they never saw this batch.
+                unseen_by_advocates = batch
                 break
 
-            provider1, key1 = _agent_provider_and_key(room, "a1")
-            provider2, key2 = _agent_provider_and_key(room, "a2")
-            replies = await asyncio.gather(
-                asyncio.to_thread(
+            shares = room.user_shares() if room.weights else None
+            if batch:
+                transcript_parts.append(for_transcript(batch, round_index))
+
+            def revise(agent_id: str, poa: dict):
+                provider, key = _agent_provider_and_key(room, agent_id)
+                return asyncio.to_thread(
                     revise_poa,
-                    poa=poa1,
+                    poa=poa,
                     tasks=tasks,
                     analysis=analysis,
                     round_index=round_index,
-                    provider=provider1,
-                    api_key=key1,
-                ),
-                asyncio.to_thread(
-                    revise_poa,
-                    poa=poa2,
-                    tasks=tasks,
-                    analysis=analysis,
-                    round_index=round_index,
-                    provider=provider2,
-                    api_key=key2,
-                ),
-            )
+                    provider=provider,
+                    api_key=key,
+                    goal_block=goal_text,
+                    stance_block=_stance_for(room, agent_id),
+                    interjections=for_advocate(
+                        batch, my_user_id=room.agent_users.get(agent_id, ""), user_shares=shares
+                    ),
+                    project_context=brief,
+                )
+
+            replies = await asyncio.gather(revise("a1", poa1), revise("a2", poa2))
             by_id = {reply["agent_id"]: reply for reply in replies}
             if "a1" in by_id:
                 poa1 = by_id["a1"]["poa"]
             if "a2" in by_id:
                 poa2 = by_id["a2"]["poa"]
+            room.poas = {"a1": poa1, "a2": poa2}
 
             for reply in replies:
                 await bus.publish(
@@ -564,16 +850,7 @@ async def _run_loop(room: Room) -> None:
                         "ts": utc_now(),
                     },
                 )
-                await bus.publish(
-                    room.room_id,
-                    {
-                        "type": "poa_generated",
-                        "agent_id": reply["agent_id"],
-                        "user_id": reply["user_id"],
-                        "poa": reply["poa"],
-                        "ts": utc_now(),
-                    },
-                )
+                await _publish_poas(room, reply["poa"])
                 transcript_parts.append(
                     f"--- round {round_index} · {reply['agent_id']} ---\n"
                     f"{reply['content']}\n\nRevised PoA:\n"
@@ -583,10 +860,12 @@ async def _run_loop(room: Room) -> None:
                 room.room_id,
                 {"type": "round_complete", "round": round_index, "ts": utc_now()},
             )
-            # Step 3a: drain mid-loop interjections queued via POST
-            # /messages — the endpoint already published them as they
-            # arrived, this just stops them leaking into a later round.
-            room.pending_messages.clear()
+
+        # K2 read the final round's interjections, but no advocate turn came
+        # after: put them back at the front of the queue so a re-negotiation
+        # (if this plan is rejected) hands them to the advocates first.
+        if unseen_by_advocates:
+            room.pending_messages[:0] = unseen_by_advocates
 
         room.phase = Phase.ANALYZED
         plan = _build_final_plan(room, poa1, poa2, analysis, rounds_used=round_index)

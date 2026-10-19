@@ -82,7 +82,7 @@ async def test_negotiate_threads_the_participants_byo_key_into_draft_poa(
 ):
     calls: list[dict] = []
 
-    def recording_draft_poa(*, agent_id, user_id, tasks, provider=None, api_key=None):
+    def recording_draft_poa(*, agent_id, user_id, tasks, provider=None, api_key=None, **_):
         calls.append({"agent_id": agent_id, "provider": provider, "api_key": api_key})
         return {
             "poa_id": f"poa_{agent_id}",
@@ -137,7 +137,7 @@ async def test_a_users_byo_key_never_reaches_the_moderator(monkeypatch):
         moderator_calls.append(api_key)
         return '{"round":1,"similarities":[],"differences":[],"converged":true}'
 
-    def recording_draft_poa(*, agent_id, user_id, tasks, provider=None, api_key=None):
+    def recording_draft_poa(*, agent_id, user_id, tasks, provider=None, api_key=None, **_):
         agent_calls.append(api_key)
         return {
             "poa_id": f"poa_{agent_id}",
