@@ -19,7 +19,7 @@ You are not a neutral assistant. You represent THIS user's requirements only.
 
 THEIR REQUIREMENTS
 {requirements_block}
-
+{guidance}
 K2 just published a structural comparison of your plan vs the other agent's plan.
 You and the humans can both see it. Your job is to WRITE A NEW PLAN OF ACTION that
 responds to that comparison — not a chat reply, a revised PoA.
@@ -29,8 +29,9 @@ HOW YOU REVISE
    CONCEDE, HOLD, or COMPROMISE. Name the move in `content`.
    COMPROMISE means a concrete third design (specific files, signatures, ownership).
    "We could support both", "make it configurable", and "either works" are not plans.
-2. You may NOT drop a requirement marked must. If two musts collide, HOLD that part
-   of the plan and COMPROMISE on file ownership / interfaces where you can.
+2. You may NOT drop a requirement marked must, unless YOUR user explicitly tells you
+   to in a human interjection. If two musts collide, HOLD that part of the plan and
+   COMPROMISE on file ownership / interfaces where you can.
 3. Keep similarities K2 already found — do not reopen settled agreement.
 4. The new PoA must be a full plan (summary, steps with files_touched, assumptions),
    not a delta.
@@ -67,6 +68,22 @@ def _user_block(tasks: Any, user_id: str) -> tuple[str, str]:
         for task in entry.get("tasks") or []:
             lines.append(f"- [{task.get('priority')}] {task.get('text')}")
     return display, "\n".join(lines) or "(none)"
+
+
+def _guidance(goal_block: str, stance_block: str) -> str:
+    """The room-level sections an advocate is steered by — the goal at this
+    stage's anchor strength (goal.py) and its user's influence (influence.py).
+    Empty when the room set neither, which leaves the prompt as it was."""
+    body = "\n\n".join(b for b in (goal_block, stance_block) if b)
+    return f"\n{body}\n" if body else ""
+
+
+def _project_section(project_context: str) -> str:
+    """What the project is and which files exist. Without it an advocate is
+    told to name "real file paths" in a repo it has never been shown."""
+    if not project_context.strip():
+        return ""
+    return f"THE PROJECT\n{project_context.strip()}\n\n"
 
 
 def _normalize_poa(raw: Any, previous: dict, round_index: int) -> dict:
@@ -118,12 +135,21 @@ def revise_poa(
     round_index: int,
     provider: str | None = None,
     api_key: str | None = None,
+    goal_block: str = "",
+    stance_block: str = "",
+    interjections: str = "",
+    project_context: str = "",
 ) -> dict:
     """Revise one PoA from K2's comparison. Blocking — call from asyncio.to_thread.
 
     `provider`/`api_key` override agent_provider(agent_id)'s static env
     default — main.py passes the room's own BYO choice (Room.agent_users
     + Room.participants[user_id].provider/.api_key) when there is one.
+
+    `goal_block`/`stance_block`: see _guidance. The goal block weakens round
+    over round (goal.anchor_strength); the stance block is fixed per room.
+    `interjections`: interjections.for_advocate(...) for this round, or "".
+    `project_context`: the project + its file list (see _project_section).
     """
     agent_id = str(poa.get("agent_id") or "")
     user_id = str(poa.get("user_id") or "")
@@ -136,11 +162,14 @@ def revise_poa(
         display_name=display,
         user_id=user_id,
         requirements_block=reqs,
+        guidance=_guidance(goal_block, stance_block),
     )
     user = (
-        f"Round {round_index}. Here is K2's comparison (humans see this too).\n"
+        _project_section(project_context)
+        + f"Round {round_index}. Here is K2's comparison (humans see this too).\n"
         "Revise YOUR plan. Do not copy the other plan wholesale.\n\n"
-        "Your current PoA:\n"
+        + (interjections + "\n\n" if interjections else "")
+        + "Your current PoA:\n"
         + json.dumps(poa, indent=2)
         + "\n\nK2 analysis:\n"
         + json.dumps(
@@ -188,7 +217,7 @@ You are not a neutral assistant. You represent THIS user's requirements only.
 
 THEIR REQUIREMENTS
 {requirements_block}
-
+{guidance}
 Draft the OPENING Plan of Action for these requirements alone — you have not seen the
 other user's agent yet, and there is no K2 comparison to respond to. Be concrete: real
 file paths, one step per concern. Do not invent requirements beyond what's listed above.
@@ -215,6 +244,9 @@ def draft_poa(
     tasks: Any,
     provider: str | None = None,
     api_key: str | None = None,
+    goal_block: str = "",
+    stance_block: str = "",
+    project_context: str = "",
 ) -> dict:
     """The opening PoA for one agent, drafted from that user's own
     submitted tasks alone. CLAUDE.md step 2: "Generate both PoAs in
@@ -222,16 +254,22 @@ def draft_poa(
     asyncio.to_thread, before the round loop (revise_poa above) starts.
 
     `provider`/`api_key`: see revise_poa's docstring — same BYO override.
+    `goal_block`/`stance_block`: see _guidance. At the draft the goal is at
+    full anchor strength — it's the only shared standard that exists yet.
     """
     display, reqs = _user_block(tasks, user_id)
     system = DRAFT_SYSTEM.format(
-        agent_id=agent_id, display_name=display, user_id=user_id, requirements_block=reqs
+        agent_id=agent_id,
+        display_name=display,
+        user_id=user_id,
+        requirements_block=reqs,
+        guidance=_guidance(goal_block, stance_block),
     )
     seed = {"poa_id": f"poa_{agent_id}", "agent_id": agent_id, "user_id": user_id}
     try:
         raw = chat(
             system=system,
-            user="Draft the opening PoA now.",
+            user=_project_section(project_context) + "Draft the opening PoA now.",
             provider=provider or agent_provider(agent_id),
             max_tokens=4096,
             api_key=api_key,

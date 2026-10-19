@@ -36,6 +36,7 @@ from dataclasses import dataclass
 
 from .coding import TicketCode, implement_ticket, placeholder_code, placeholder_content
 from .events import EventBus, utc_now
+from .goal import anchor_strength, goal_block
 from .rooms import FileState, Phase, Room
 from .schemas import Ticket
 
@@ -138,6 +139,7 @@ def agent_implementer(provider_for: ProviderFor | None = None) -> Implementer:
             paths=list(room.files.keys()),
             provider=provider,
             api_key=api_key,
+            goal_block=goal_block(room.goal, anchor_strength("execute")),
         )
 
     return implement

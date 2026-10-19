@@ -229,18 +229,27 @@ def _user_prompt(
     plan: FinalPlan | None,
     context: str | None,
     repo_view: str,
+    goal_block: str = "",
 ) -> str:
     steps = []
     for step in plan.steps if plan else []:
         touches = set(step.files_touched) & set(ticket.files_owned)
         marker = "  <-- your files" if touches else ""
         steps.append(f"- {step.title}: {step.description} {list(step.files_touched)}{marker}")
+    # The plan's steps are both advocates' steps merged; where they still
+    # disagreed, the resolution (possibly an influence/goal default, see
+    # influence.weigh_deadlock) is what says which way to build.
+    resolutions = [
+        f"- {r.issue_id}: {r.outcome}" for r in (plan.resolutions if plan else []) if r.outcome
+    ]
 
     return (
         f"TICKET {ticket.ticket_id}: {ticket.title}\n"
         f"{ticket.description}\n\n"
         f"APPROVED PLAN\n{plan.summary if plan else '(none)'}\n"
         + ("\n".join(steps) + "\n" if steps else "")
+        + ("\nRESOLVED DISAGREEMENTS\n" + "\n".join(resolutions) + "\n" if resolutions else "")
+        + (f"\n{goal_block}\n" if goal_block else "")
         + (f"\nSHARED CONTEXT\n{context}\n" if context else "")
         + f"\nTHE REPOSITORY AS IT STANDS\n{repo_view}\n"
         f"\nWrite the complete final content of every file you own"
@@ -259,6 +268,7 @@ def implement_ticket_sync(
     provider: str | None = None,
     api_key: str | None = None,
     chat_fn: Callable[..., str] | None = None,
+    goal_block: str = "",
 ) -> TicketCode:
     """One ticket's worth of real code. Blocking — call via asyncio.to_thread.
 
@@ -266,6 +276,9 @@ def implement_ticket_sync(
     is for an unparseable response, and the fallback after that is the
     placeholder stub. A failure never propagates: a ticket that cannot be
     coded still executes and still reports honestly.
+
+    `goal_block` is the room's north star at execute-stage anchor strength
+    (goal.py): a one-line sanity check, not the brief — the ticket is.
     """
     send = chat_fn or chat
     owned_block, others_block = _ownership_blocks(ticket, all_tickets)
@@ -277,6 +290,7 @@ def implement_ticket_sync(
         plan=plan,
         context=context,
         repo_view=build_repo_view(paths=paths, read_file=read_file, owned=ticket.files_owned),
+        goal_block=goal_block,
     )
 
     last_error: str | None = None

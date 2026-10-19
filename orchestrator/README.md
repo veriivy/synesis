@@ -49,19 +49,26 @@ for exactly what that does and doesn't cover.
 ## The full sequence
 
 ```
-POST /rooms
+POST /rooms                              -> { room_id, admin_token }
+POST /rooms/{id}/goal                    (optional, admin_token — the fixed north star)
+POST /rooms/{id}/weights                 (optional, admin_token — per-user influence)
 POST /rooms/{id}/participants   x2       (first join = a1, second = a2;
                                           response carries a participant_token —
                                           required on every subsequent call for
                                           that user_id: /tasks, /messages, /approve)
-POST /rooms/{id}/context                 (optional)
+POST /rooms/{id}/context                 (optional, admin_token; frozen once
+                                          negotiation starts)
 POST /rooms/{id}/tasks          x2       (optional — see below)
-POST /rooms/{id}/negotiate      -> 202
+POST /rooms/{id}/negotiate      -> 202   (drafts run in parallel, off the event loop)
   GET /rooms/{id}/stream: poa_generated x2, then per round: analysis,
   agent_message x2, round_complete — up to MAX_ROUNDS (.env, default 3) —
   ending in plan_proposed
+POST /rooms/{id}/messages       any time (queued for the next round's K2 +
+                                          advocates — see "Human interjections")
 POST /rooms/{id}/plan/approve   x2       (the 2nd approval decomposes
-                                          tickets and emits tickets_created)
+                                          tickets and emits tickets_created;
+                                          approved:false + notes -> POST
+                                          /negotiate again resumes with them)
 POST /rooms/{id}/execute        -> 202   (ticket_started/file_written/
                                           ticket_completed per ticket)
 GET  /rooms/{id}/files, /rooms/{id}/files/{path}
@@ -83,6 +90,91 @@ it doesn't need any: if a real model's revised PoA drops a step, that step
 is just gone from the merge. Any difference still marked `"blocking"` in
 the *last* round's analysis gets an honest `"Unresolved after N round(s)"`
 resolution rather than a fabricated one.
+
+## Room governance: the goal and influence weights
+
+Both are optional, both are set by whoever created the room (the
+`admin_token` from `POST /rooms` — a participant must not be able to hand
+themselves a 10x weight), and both freeze with a 409 the moment negotiation
+starts. A room that sets neither prompts and resolves exactly as before.
+
+**The goal** (`goal.py`) — `POST /rooms/{id}/goal`
+`{ admin_token, statement, success_criteria: [...] }`. One overarching goal
+for the room's whole life, published as `goal_set` with a `fingerprint` (a
+hash of the exact text) that every prompt block also carries. Every stage gets
+it, at a strength that fades as the work gets concrete:
+
+| stage | anchor | what the prompt carries |
+|---|---|---|
+| opening draft | 1.00 | statement + criteria, *primary* — say which criterion a position serves |
+| round 1 / 2 / 3 | 0.88 / 0.70 / 0.52 | statement + criteria; *primary*, then *tiebreaker* |
+| coding a ticket | 0.20 | statement only, *sanity check* — the ticket is the brief |
+
+K2 gets the goal too, and adds `goal_favors` (an agent_id or null) to each
+difference: which position better serves the goal, judged on merit. Each
+`analysis` event carries the round's `goal_anchor`.
+
+**Influence** (`influence.py`) — `POST /rooms/{id}/weights`
+`{ admin_token, weights: { "u1": 2, "u2": 1 } }`. Relative, `0 < w <= 10`,
+default 1, mergeable, settable before a user joins; published as
+`weights_updated` with each user's `shares`. A weight is a lean, not a lock.
+It acts in exactly two places:
+
+1. **The advocate's stance** — the larger share may HOLD on a shorter
+   justification; the smaller share is told to spend HOLDs on musts and
+   COMPROMISE elsewhere. Both are told the lean is not a veto, and a smaller
+   say never licenses dropping a `must`.
+2. **Deadlock defaults** (`weigh_deadlock`, in code) — a blocking issue still
+   open at the round cap scores each side as *influence share +
+   `GOAL_TIEBREAK_BONUS` (0.2) if K2's `goal_favors` names it*. A lead of
+   `INFLUENCE_DECISIVE_MARGIN` (0.15) or more makes that side's position the
+   default resolution; anything closer stays "needs a user decision". So an
+   even room breaks ties by the goal; 2:1 carries an issue the goal is neutral
+   on but not one the goal backs the other side on; 3:1 carries both.
+
+What it deliberately does **not** touch: K2 never sees the weights (its
+`goal_favors` has to be an independent check on them), and plan approval is
+still unanimous — a weighted default is a proposal the lighter user can
+reject. A default is also structural, not just a note. K2 lists the `files`
+each difference is about, and those files are taken out of the losing side's
+steps, but only where the winner also writes them. That way the loser's coder
+doesn't write the contested file after the winner, and no file ends up with
+nobody writing it. The coder is shown the resolutions as well.
+
+## Human interjections and re-negotiation (`interjections.py`)
+
+`POST /messages` used to publish to the chat and then be cleared at the end
+of the round without any model reading it. Now the loop drains the queue at
+the **top** of each round (CLAUDE.md step 3a) and hands the batch to:
+
+- **K2** — by name only, never with influence; a human's words are input to
+  its diff, not a vote.
+- **Both advocates** — labelled `YOUR USER` or `other side`, plus each
+  speaker's `% say` when the room has weights. An advocate's own user's
+  words are instructions, and an explicit one is now the only way it may
+  concede a `must` (the anti-mush rule finally has its exception). The other
+  side's words are input, weighed by their say, and never license dropping a
+  `must`.
+
+A message sent mid-round lands in the next round rather than vanishing. A
+batch K2 reads in the final round (when no advocate turn follows) is put
+back on the queue. Only joined participants are queued: an unverified
+`user_id` still shows in the chat but steers nothing, and the response's
+`queued` says which happened. Messages are capped at 4000 chars.
+
+**Rejecting with a reason.** `approved: false` with `notes` publishes the
+notes as that user's `user_message` and queues them. A second
+`POST /negotiate` then **resumes from the latest PoAs** instead of
+redrafting: it emits a `moderator_message`, round numbers keep counting
+(4, 5, 6…), and the objection is on the table in the first resumed round.
+
+**Lifecycle guards.**
+- `/negotiate` is refused once the plan is approved, since a new plan would
+  make `write_file` refuse a running execution.
+- Votes are refused while a negotiation is running.
+- Only users listed on the plan may vote.
+- A repeat approval is a 409, not a second decomposition. If ticketing
+  failed, approving again retries it.
 
 ## What's real vs. a deliberate stand-in
 
@@ -190,6 +282,9 @@ orchestrator/
                    BYO api_key override, provider_key_for (self-reported name -> registry key)
   k2.py           K2's per-round structural diff (analyze) + extract_object
   agents.py       draft_poa (opening) / revise_poa (per-round) for a1/a2
+  goal.py         the room's fixed north star + its per-stage anchor strength
+  influence.py    per-user weights -> shares, advocate stance, deadlock tiebreak
+  interjections.py  human messages/rejection notes -> K2 and advocate prompt sections
   events.py       EventBus: per-room dict-event log + SSE fan-out + db.record_event hook
   rooms.py        Room / RoomStore (in-memory) + room_snapshot (-> db.save_room)
   schemas.py      FinalPlan/Ticket/Step/... — typed, for validator.py + ticketing.py
@@ -213,6 +308,13 @@ orchestrator/
     test_participant_auth.py  the participant_token fix — regression tests
                            for the exact identity-spoofing/key-hijack
                            exploit steps from the security review
+    test_interjections.py  who sees which human message, labelled how, in which
+                           round; reject-with-notes -> resumed negotiation
+    test_lifecycle.py     audit regressions: approval/negotiate guards, /context
+                           auth, parallel drafts, project brief, file hand-over
+    scripted_room.py      shared recording fakes for the two files above
+    test_governance.py    the goal's fade, the weight tiebreak table, admin-only
+                           + frozen-after-start, and both wired through the app
     test_end_to_end.py    full room lifecycle through the real app, LLM
                            calls faked at the names main.py imported them
                            under, everything else (ticketing, validator,

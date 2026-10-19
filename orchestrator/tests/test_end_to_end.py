@@ -42,7 +42,15 @@ def _slug(text: str) -> str:
 
 
 def fake_draft_poa(
-    *, agent_id: str, user_id: str, tasks: dict, provider: str | None = None, api_key: str | None = None
+    *,
+    agent_id: str,
+    user_id: str,
+    tasks: dict,
+    provider: str | None = None,
+    api_key: str | None = None,
+    goal_block: str = "",
+    stance_block: str = "",
+    project_context: str = "",
 ) -> dict:
     entry = next(
         (e for e in tasks.get("tasks_by_user", []) if e.get("user_id") == user_id), None
@@ -69,7 +77,10 @@ def fake_draft_poa(
     }
 
 
-def fake_analyze(*, context, tasks, poa1: dict, poa2: dict, round_index: int, transcript: str) -> dict:
+def fake_analyze(
+    *, context, tasks, poa1: dict, poa2: dict, round_index: int, transcript: str, goal_block: str = "",
+    interjections: str = "",
+) -> dict:
     by_path_a = {p: s for s in poa1["steps"] for p in s["files_touched"]}
     by_path_b = {p: s for s in poa2["steps"] for p in s["files_touched"]}
     shared = sorted(set(by_path_a) & set(by_path_b))
@@ -101,6 +112,10 @@ def fake_revise_poa(
     round_index: int,
     provider: str | None = None,
     api_key: str | None = None,
+    goal_block: str = "",
+    stance_block: str = "",
+    interjections: str = "",
+    project_context: str = "",
 ) -> dict:
     priority_by_path: dict[str, str] = {}
     for s in poa["steps"]:

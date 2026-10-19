@@ -12,10 +12,14 @@ intake, the negotiated FinalPlan, tickets, and the workspace files.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .goal import Goal
+from .influence import shares
+from .interjections import Interjection
 from .schemas import FinalPlan, Participant, Task, Ticket
 from .workspace import seed_files
 
@@ -56,11 +60,29 @@ class Room:
     context_version: int = 0
     tasks_by_user: dict[str, list[Task]] = field(default_factory=dict)
 
-    # Mid-loop interjections (CLAUDE.md step 3a). POST /messages appends
-    # here and publishes the user_message event immediately; the
-    # negotiate loop drains (clears) this at the top of each round.
-    pending_messages: list[str] = field(default_factory=list)
+    # Room governance, both configured by whoever created the room (they
+    # hold admin_token, returned once by POST /rooms) and both frozen once
+    # negotiation starts — see `governance_locked`.
+    #   goal: the north star every agent is anchored to (goal.py).
+    #   weights: user_id -> relative influence (influence.py); anyone
+    #     absent weighs influence.DEFAULT_WEIGHT.
+    # admin_token is a secret like participant_tokens: never serialized.
+    admin_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
+    goal: Goal | None = None
+    weights: dict[str, float] = field(default_factory=dict)
+
+    # Mid-loop interjections (CLAUDE.md step 3a; interjections.py). POST
+    # /messages and a plan rejection's notes append here; the negotiate loop
+    # drains it at the top of each round and hands the batch to K2 and both
+    # advocates. Anything that arrives after the last round's drain waits
+    # for the next negotiation (a re-negotiation after a rejection).
+    pending_messages: list[Interjection] = field(default_factory=list)
     current_round: int = 0
+
+    # agent_id -> that advocate's latest PoA. Kept so a re-negotiation (after
+    # a rejected plan) resumes from where the argument left off instead of
+    # redrafting from scratch and relitigating everything already conceded.
+    poas: dict[str, dict] = field(default_factory=dict)
 
     # Negotiation output.
     plan: FinalPlan | None = None
@@ -81,6 +103,35 @@ class Room:
     files: dict[str, FileState] = field(
         default_factory=lambda: {p: FileState(content=c) for p, c in seed_files().items()}
     )
+
+    @property
+    def governance_locked(self) -> bool:
+        """The goal and the weights are setup, not levers to pull mid-
+        argument: once negotiation has started (phase leaves WAITING, and
+        it never goes back), both are fixed for the room's life."""
+        return self.phase != Phase.WAITING
+
+    def drain_interjections(self) -> list[Interjection]:
+        """Take everything queued so far. No await inside, so nothing can
+        land between the read and the reset."""
+        batch, self.pending_messages = self.pending_messages, []
+        return batch
+
+    def display_name(self, user_id: str) -> str:
+        p = self.participants.get(user_id)
+        return p.display_name if p else user_id
+
+    def user_shares(self) -> dict[str, float]:
+        """Influence share for everyone the room knows about: joined
+        participants plus anyone weighted ahead of joining."""
+        return shares(self.weights, [*self.participants, *self.weights])
+
+    def agent_shares(self) -> dict[str, float]:
+        """agent_id -> its user's influence share among the negotiating
+        users only (a weighted bystander doesn't dilute the two who are
+        actually arguing). Needs agent_users, so: set once PoAs exist."""
+        by_user = shares(self.weights, self.agent_users.values())
+        return {agent_id: by_user[user_id] for agent_id, user_id in self.agent_users.items()}
 
     def tasks_payload(self) -> dict:
         """The exact shape k2.analyze / agents.revise_poa already expect
@@ -119,6 +170,8 @@ def room_snapshot(room: Room) -> dict:
             for user_id, tasks in room.tasks_by_user.items()
         },
         "current_round": room.current_round,
+        "goal": room.goal.public() if room.goal else None,
+        "weights": dict(room.weights),
         "plan": room.plan.model_dump() if room.plan else None,
         "tickets": [t.model_dump() for t in room.tickets],
         "files": {
