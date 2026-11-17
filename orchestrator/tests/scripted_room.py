@@ -50,6 +50,12 @@ class ScriptedRoom:
             "severity": "blocking",
             "files": ["src/auth.py"],
         }
+        #: round -> K2's differences that round (default: [self.diff]).
+        self.differences_by_round: dict[int, list[dict]] = {}
+        #: rounds whose K2 reply was unreadable twice (k2.analyze's fallback).
+        self.unreadable_rounds: set[int] = set()
+        #: agent_id -> its speech each round (default "d1: HOLD").
+        self.speech: dict[str, str] = {}
         #: Called (in the worker thread) at the start of each fake call.
         self.on_draft: Callable[[str], None] | None = None
         self.on_analyze: Callable[[int], None] | None = None
@@ -65,11 +71,21 @@ class ScriptedRoom:
         if self.on_analyze:
             self.on_analyze(kw["round_index"])
         self.analyses.append(kw)
+        round_index = kw["round_index"]
+        if round_index in self.unreadable_rounds:
+            return {
+                "round": round_index,
+                "similarities": [],
+                "differences": [],
+                "converged": False,
+                "moderator_failed": True,
+            }
+        differences = self.differences_by_round.get(round_index, [self.diff])
         return {
-            "round": kw["round_index"],
+            "round": round_index,
             "similarities": [],
-            "differences": [dict(self.diff)],
-            "converged": False,
+            "differences": [dict(d) for d in differences],
+            "converged": not differences,
         }
 
     def revise_poa(self, **kw) -> dict:
@@ -80,7 +96,7 @@ class ScriptedRoom:
         return {
             "agent_id": agent_id,
             "user_id": kw["poa"]["user_id"],
-            "content": "d1: HOLD",
+            "content": self.speech.get(agent_id, "d1: HOLD"),
             "addresses_issues": ["d1"],
             "poa": kw["poa"],
         }
@@ -108,9 +124,14 @@ async def client():
 
 
 async def setup_room(
-    client: AsyncClient, *, weights: dict | None = None, context: str | None = None
+    client: AsyncClient,
+    *,
+    weights: dict | None = None,
+    context: str | None = None,
+    task_texts: dict[str, str] | None = None,
 ) -> tuple[str, str, dict[str, str]]:
-    """Room with Avery (u1 -> a1) and Blair (u2 -> a2), one must each.
+    """Room with Avery (u1 -> a1) and Blair (u2 -> a2), one must each
+    ("Avery's auth" / "Blair's auth" unless `task_texts` says otherwise).
     Returns (room_id, admin_token, {user_id: participant_token})."""
     created = (await client.post("/rooms")).json()
     room_id, admin = created["room_id"], created["admin_token"]
@@ -133,7 +154,7 @@ async def setup_room(
             f"/rooms/{room_id}/tasks",
             json={
                 "user_id": user_id,
-                "tasks": [{"text": f"{name}'s auth", "priority": "must"}],
+                "tasks": [{"text": (task_texts or {}).get(user_id, f"{name}'s auth"), "priority": "must"}],
                 "participant_token": tokens[user_id],
             },
         )

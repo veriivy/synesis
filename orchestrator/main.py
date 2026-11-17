@@ -59,6 +59,7 @@ from .interjections import (
     for_moderator,
     for_transcript,
 )
+from .issues import how_settled, resolution_text
 from .k2 import analyze, blocking_ids, has_converged, load_fixture
 from .providers import provider_key_for, provider_status
 from .rooms import Phase, Room, RoomStore, room_snapshot
@@ -421,6 +422,12 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
         # Second approval: CLAUDE.md step 5 — update shared context, then decompose.
         room.plan.status = "approved"
         room.phase = Phase.AWAITING_APPROVAL
+        record = _decision_record(room, room.plan)
+        # The shared context now carries what was decided, so every coder
+        # (execution.agent_implementer hands room.project_context over as
+        # SHARED CONTEXT) builds against the agreement, not just the brief.
+        # It used to publish the plan's one-line summary and change nothing.
+        room.project_context = "\n\n".join(p for p in (room.project_context.strip(), record) if p)
         room.context_version += 1
         await bus.publish(room_id, {"type": "plan_approved", "plan_id": room.plan.plan_id, "ts": utc_now()})
         await bus.publish(
@@ -428,7 +435,7 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
             {
                 "type": "context_updated",
                 "version": room.context_version,
-                "content": room.plan.summary,
+                "content": record,
                 "ts": utc_now(),
             },
         )
@@ -440,6 +447,8 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
     except Exception as exc:  # noqa: BLE001 — must reach the client as an event
         log.exception("ticketing failed for %s", room_id)
         await bus.publish(room_id, {"type": "error", "where": "ticketing", "detail": str(exc), "ts": utc_now()})
+        # The approval and the new shared context still happened.
+        await db.save_room(room_snapshot(room))
         return {"ok": True}
 
     room.tickets = result.tickets
@@ -449,6 +458,41 @@ async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
     )
     await db.save_room(room_snapshot(room))
     return {"ok": True}
+
+
+def _decision_record(room: Room, plan: FinalPlan) -> str:
+    """What both users just agreed to, in the shape of
+    fixtures/events/context_updated.json: each blocking issue's outcome,
+    then who owns which files."""
+    topics = {i.issue_id: i.topic for i in room.issues.issues.values()}
+    decided = []
+    for r in plan.resolutions:
+        label = f"{r.issue_id} ({topics[r.issue_id]})" if r.issue_id in topics else r.issue_id
+        outcome = (
+            "no single answer — both sides' steps stay in the plan as approved"
+            if r.outcome.startswith("Unresolved")
+            else r.outcome.rstrip(".")
+        )
+        decided.append(f"{label}: {outcome}.")
+    writers: dict[str, list[str]] = {}  # path -> agents, in plan order
+    for step in plan.steps:
+        agent = room.step_owner.get(step.step_id)
+        for path in step.files_touched if agent else []:
+            if agent not in writers.setdefault(path, []):
+                writers[path].append(agent)
+    owned: dict[str, list[str]] = {}
+    for path, agents in writers.items():
+        if len(agents) == 1:
+            owned.setdefault(agents[0], []).append(path)
+    shared = [path for path, agents in writers.items() if len(agents) > 1]
+    lines = [f"{_agent_label(room, a)} owns {', '.join(paths)}." for a, paths in sorted(owned.items())]
+    if shared:
+        # The validator puts overlapping tickets in sequence (validator.py).
+        lines.append(f"Both sides write {', '.join(shared)}, one ticket after the other.")
+    head = "Decided: " + (
+        " ".join(decided) if decided else "the merged plan as proposed — no blocking disagreements."
+    )
+    return " ".join([head, *lines])
 
 
 async def _queue_rejection(room: Room, user_id: str, notes: str) -> None:
@@ -616,6 +660,30 @@ async def _draft_opening_poas(room: Room, project_brief: str) -> tuple[dict, dic
     return poa1, poa2
 
 
+async def _moderator_says(room: Room, round_index: int, content: str) -> None:
+    await bus.publish(
+        room.room_id,
+        {"type": "moderator_message", "round": round_index, "content": content, "ts": utc_now()},
+    )
+
+
+def _agent_label(room: Room, agent_id: str) -> str:
+    """"a2 (Blair)" — or plain "a2" when no participant name is known."""
+    name = room.display_name(room.agent_users.get(agent_id, agent_id))
+    return f"{agent_id} ({name})" if name and name != agent_id else agent_id
+
+
+def _task_lists_differ(tasks: dict) -> bool:
+    """Whether the two users asked for different things — the condition on
+    CLAUDE.md's forced probe round. Compares task texts, ignoring case and
+    spacing."""
+    lists = {
+        frozenset(" ".join(str(t.get("text") or "").lower().split()) for t in entry.get("tasks") or [])
+        for entry in (tasks or {}).get("tasks_by_user") or []
+    }
+    return len(lists) > 1
+
+
 def _files_of(poa: dict) -> set[str]:
     return {str(p) for step in poa.get("steps") or [] for p in step.get("files_touched") or []}
 
@@ -676,6 +744,15 @@ def _build_final_plan(room: Room, poa1: dict, poa2: dict, analysis: dict, rounds
             Resolution(issue_id=str(diff.get("issue_id") or ""), outcome=outcome, rationale=rationale)
         )
 
+    # CLAUDE.md step 4: a resolution per blocking issue — including the ones
+    # the argument itself settled before the last round, which a plan built
+    # from the final analysis alone never mentioned.
+    still_open = {r.issue_id for r in resolutions}
+    settled = [i for i in room.issues.settled() if i.issue_id not in still_open]
+    for issue in settled:
+        outcome, rationale = resolution_text(issue, lambda a: _agent_label(room, a))
+        resolutions.append(Resolution(issue_id=issue.issue_id, outcome=outcome, rationale=rationale))
+
     steps: list[Step] = []
     step_owner: dict[str, str] = {}
     for owner, poa in (("a1", poa1), ("a2", poa2)):
@@ -697,14 +774,20 @@ def _build_final_plan(room: Room, poa1: dict, poa2: dict, analysis: dict, rounds
             )
 
     u1, u2 = poa1.get("user_id") or "u1", poa2.get("user_id") or "u2"
-    undecided = len(resolutions) - defaulted
+    undecided = len(resolutions) - defaulted - len(settled)
     plan = FinalPlan(
         plan_id=f"plan_{room.room_id}",
         rounds_used=rounds_used,
         summary=(
             f"Merged plan from a1 ({u1}) and a2 ({u2}) after {rounds_used} round(s); "
             f"{undecided} blocking issue(s) still need a decision"
-            + (f", {defaulted} defaulted by the influence tiebreak." if defaulted else ".")
+            + (f", {defaulted} defaulted by the influence tiebreak" if defaulted else "")
+            + (f"; {len(settled)} settled during negotiation" if settled else "")
+            + (
+                "; K2's analysis was unreadable, so differences are unknown."
+                if (analysis or {}).get("moderator_failed")
+                else "."
+            )
         ),
         steps=steps,
         resolutions=resolutions,
@@ -782,6 +865,10 @@ async def _run_loop(room: Room) -> None:
         last_round = room.current_round + MAX_ROUNDS
         round_index = room.current_round
         unseen_by_advocates: list[Interjection] = []
+        # Interjections K2 has read that no advocate turn has followed yet
+        # (a probe round under STOP_ON_CONVERGE skips the advocates).
+        advocate_backlog: list[Interjection] = []
+        probe = probed = False
         for round_index in range(first_round, last_round + 1):
             room.current_round = round_index
             # Step 3a: everything the humans said since the last drain is
@@ -801,21 +888,90 @@ async def _run_loop(room: Room) -> None:
                 transcript="\n\n".join(transcript_parts),
                 goal_block=goal_text,
                 interjections=for_moderator(batch),
+                previous_differences=room.last_analysis.get("differences") or None,
+                probe=probe,
             )
+            probe = False
+            # "K2 said nothing" is not "K2 found nothing". An unreadable
+            # round used to publish zero differences — under STOP_ON_CONVERGE
+            # that ended the argument as "converged", and in the final round
+            # it erased every open issue from the plan.
+            unreadable = bool(analysis.get("moderator_failed"))
+            carried_from = room.last_analysis.get("round") if unreadable else None
+            if carried_from is not None:
+                analysis = {**room.last_analysis, "round": round_index}
             await bus.publish(
                 room.room_id, _publish_analysis(analysis, anchor if room.goal else None)
             )
+            if unreadable:
+                await _moderator_says(
+                    room,
+                    round_index,
+                    f"K2's round {round_index} analysis came back unreadable twice; "
+                    + (
+                        f"carrying round {carried_from}'s differences forward."
+                        if carried_from is not None
+                        else "there is no earlier analysis to carry forward."
+                    ),
+                )
+            else:
+                room.last_analysis = analysis
+                settled = room.issues.observe(analysis, round_index)
+                if settled:
+                    await _moderator_says(
+                        room,
+                        round_index,
+                        "Settled: "
+                        + "; ".join(
+                            f"{i.issue_id} ({i.topic}) — {how_settled(i, lambda a: _agent_label(room, a))}"
+                            for i in settled
+                        )
+                        + ".",
+                    )
 
-            stop = STOP_ON_CONVERGE and (has_converged(analysis) or not blocking_ids(analysis))
+            open_ids = blocking_ids(analysis)
+            looks_settled = not (unreadable and carried_from is None) and (
+                has_converged(analysis) or not open_ids
+            )
+            # CLAUDE.md anti-mush: nothing to fight about in the first round
+            # while the users asked for different things is likelier K2
+            # skimming than real agreement — probe once before believing it.
+            if (
+                looks_settled
+                and not probed
+                and round_index == first_round
+                and round_index < last_round
+                and _task_lists_differ(tasks)
+            ):
+                probe = probed = True
+                await _moderator_says(
+                    room,
+                    round_index,
+                    f"No blocking differences in round {round_index}, but the two task "
+                    "lists differ — one probe round before calling this converged.",
+                )
+
+            pending = advocate_backlog + batch
+            stop = STOP_ON_CONVERGE and looks_settled and not probe
             if stop or round_index >= last_round:
                 log.info("room %s stopped at round %d", room.room_id, round_index)
-                # No advocate turn follows, so they never saw this batch.
-                unseen_by_advocates = batch
+                # No advocate turn follows, so they never saw these.
+                unseen_by_advocates = pending
                 break
 
             shares = room.user_shares() if room.weights else None
             if batch:
                 transcript_parts.append(for_transcript(batch, round_index))
+            if probe and STOP_ON_CONVERGE:
+                # No blocking issue to answer: the probe is K2's alone, and
+                # the advocates hear this round's interjections next round.
+                advocate_backlog = pending
+                await bus.publish(
+                    room.room_id,
+                    {"type": "round_complete", "round": round_index, "ts": utc_now()},
+                )
+                continue
+            advocate_backlog = []
 
             def revise(agent_id: str, poa: dict):
                 provider, key = _agent_provider_and_key(room, agent_id)
@@ -830,7 +986,7 @@ async def _run_loop(room: Room) -> None:
                     goal_block=goal_text,
                     stance_block=_stance_for(room, agent_id),
                     interjections=for_advocate(
-                        batch, my_user_id=room.agent_users.get(agent_id, ""), user_shares=shares
+                        pending, my_user_id=room.agent_users.get(agent_id, ""), user_shares=shares
                     ),
                     project_context=brief,
                 )
@@ -844,6 +1000,7 @@ async def _run_loop(room: Room) -> None:
             room.poas = {"a1": poa1, "a2": poa2}
 
             for reply in replies:
+                room.issues.record_moves(reply, open_ids)
                 await bus.publish(
                     room.room_id,
                     {

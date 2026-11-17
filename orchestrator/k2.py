@@ -38,8 +38,25 @@ Rules:
 - severity is "blocking" or "minor". Two must-haves colliding is blocking.
 - converged is true only if there are no blocking differences.
 - When a prior-round transcript is present, diff the LATEST PoAs, not the opening drafts.
+- When last round's differences are given, an issue that is still open keeps its
+  issue_id; a new issue takes the next unused number. Never reuse a settled issue's id.
 - Finish the JSON. Never cut a string mid-word.
 """
+
+RETRY_NOTE = (
+    "\n\nYour previous reply was not complete, valid JSON. Reply again, shorter: at most "
+    "2 similarities and 3 differences, one short sentence each. Compact JSON only."
+)
+
+PROBE_RULE = (
+    "\n\nPROBE ROUND. Last round you found no blocking differences, but the two users "
+    "asked for different things (see Task lists). Before this room is declared converged, "
+    "check specifically for conflicts the plans paper over: the same file written two "
+    "ways, incompatible interfaces or data formats, one plan assuming something the other "
+    "user's must-have rules out, steps that depend on an order the other plan breaks. "
+    "Report each real one with an honest severity. Do not invent a conflict: if the plans "
+    "genuinely agree, say so with converged true."
+)
 
 
 def load_fixture(name: str) -> Any:
@@ -169,6 +186,8 @@ def analyze(
     transcript: str = "",
     goal_block: str = "",
     interjections: str = "",
+    previous_differences: list[dict] | None = None,
+    probe: bool = False,
 ) -> dict:
     """One K2 call. Blocking — run in a thread from the FastAPI event loop.
 
@@ -178,6 +197,14 @@ def analyze(
     and influence.weigh_deadlock does the weighting in code afterwards.
     `interjections` is interjections.for_moderator(...) — the humans'
     messages since the last analysis, by name only, for the same reason.
+    `previous_differences`: last round's differences, so an open issue
+    keeps its issue_id and main.py can tell which issues got settled.
+    `probe`: CLAUDE.md's forced probe round — the last round found no
+    blocking differences although the task lists differ; look again.
+
+    If both attempts come back unreadable, the result is marked
+    `moderator_failed` so the loop never mistakes "K2 said nothing" for
+    "K2 found nothing".
     """
     extra = ""
     if transcript.strip():
@@ -187,6 +214,9 @@ def analyze(
         extra = (
             "\n\nPrior-round transcript (latest PoAs matter; ignore fluff):\n" + clipped
         )
+    previous = ""
+    if previous_differences:
+        previous = "\n\nLast round's differences:\n" + json.dumps(previous_differences, indent=2)
     user = (
         (goal_block + GOAL_RULE + "\n\n" if goal_block else "")
         + "Shared context:\n"
@@ -198,30 +228,29 @@ def analyze(
         + "\n\nPoA2:\n"
         + json.dumps(poa2, indent=2)
         + extra
+        + previous
         + ("\n\n" + interjections if interjections else "")
+        + (PROBE_RULE if probe else "")
         + f"\n\nDiff the current positions. Round is {round_index}. "
         "Compact JSON only. Finish the object."
     )
-    raw = chat(
-        system=SYSTEM,
-        user=user,
-        provider=moderator_provider(),
-        max_tokens=8192,
-    )
     try:
-        analysis = extract_object(raw)
+        analysis = extract_object(
+            chat(system=SYSTEM, user=user, provider=moderator_provider(), max_tokens=8192)
+        )
     except ValueError:
+        # The retry carries the same inputs. It used to send only "Round N,
+        # reply with JSON" — no plans at all — so a "successful" retry was
+        # K2 diffing nothing.
         try:
-            raw = chat(
-                system=SYSTEM,
-                user=(
-                    f"Round {round_index}. Reply with compact valid JSON only "
-                    "(similarities + differences + converged). No markdown."
-                ),
-                provider=moderator_provider(),
-                max_tokens=2048,
+            analysis = extract_object(
+                chat(
+                    system=SYSTEM,
+                    user=user + RETRY_NOTE,
+                    provider=moderator_provider(),
+                    max_tokens=8192,
+                )
             )
-            analysis = extract_object(raw)
         except ValueError:
             # Do not kill the room. Round 3 often truncates; keep going.
             analysis = {
@@ -229,7 +258,8 @@ def analyze(
                 "similarities": [],
                 "differences": [],
                 "converged": False,
-                "note": "moderator JSON truncated; treating round as not converged",
+                "moderator_failed": True,
+                "note": "moderator JSON unreadable twice; this round has no analysis",
             }
     analysis["round"] = round_index
     analysis.setdefault("similarities", [])

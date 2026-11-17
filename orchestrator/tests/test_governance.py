@@ -223,7 +223,7 @@ class Recorder:
         self.drafts.append({"agent_id": agent_id, "goal_block": goal_block, "stance_block": stance_block})
         return _poa(agent_id, user_id)
 
-    def analyze(self, *, context, tasks, poa1, poa2, round_index, transcript, goal_block="", interjections=""):
+    def analyze(self, *, context, tasks, poa1, poa2, round_index, transcript, goal_block="", interjections="", **_):
         self.analyses.append({"round": round_index, "goal_block": goal_block})
         return {
             "round": round_index,

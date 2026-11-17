@@ -62,11 +62,14 @@ POST /rooms/{id}/tasks          x2       (optional — see below)
 POST /rooms/{id}/negotiate      -> 202   (drafts run in parallel, off the event loop)
   GET /rooms/{id}/stream: poa_generated x2, then per round: analysis,
   agent_message x2, round_complete — up to MAX_ROUNDS (.env, default 3) —
-  ending in plan_proposed
+  ending in plan_proposed. K2 speaks as moderator_message when an issue
+  settles, when it probes, and when a round's analysis was unreadable.
 POST /rooms/{id}/messages       any time (queued for the next round's K2 +
                                           advocates — see "Human interjections")
-POST /rooms/{id}/plan/approve   x2       (the 2nd approval decomposes
-                                          tickets and emits tickets_created;
+POST /rooms/{id}/plan/approve   x2       (the 2nd approval emits
+                                          context_updated with the decision
+                                          record, then decomposes tickets
+                                          and emits tickets_created;
                                           approved:false + notes -> POST
                                           /negotiate again resumes with them)
 POST /rooms/{id}/execute        -> 202   (ticket_started/file_written/
@@ -84,12 +87,59 @@ default for a bare `POST /rooms` -> `POST /negotiate` with no setup.
 
 Once the round loop ends (converged, or `MAX_ROUNDS` reached),
 `_build_final_plan` merges whatever the two PoAs currently say into a
-`FinalPlan` and publishes `plan_proposed`. There's no separate per-issue
-concede/hold/compromise bookkeeping the way an earlier draft of this had —
-it doesn't need any: if a real model's revised PoA drops a step, that step
-is just gone from the merge. Any difference still marked `"blocking"` in
-the *last* round's analysis gets an honest `"Unresolved after N round(s)"`
-resolution rather than a fabricated one.
+`FinalPlan` and publishes `plan_proposed`. If a real model's revised PoA
+drops a step, that step is just gone from the merge.
+
+## How a negotiation ends (`issues.py`)
+
+**A resolution per blocking issue** (CLAUDE.md step 4). The plan used to be
+built from the last round's analysis alone, so an issue conceded in round 2,
+the demo's "one concedes" moment, never appeared in it. `IssueLedger` now
+follows every blocking `issue_id` across rounds. K2 is shown last round's
+differences so an open issue keeps its id. The ledger also remembers the move
+each advocate named on each issue: advocates now return `moves:
+{"d1": "CONCEDE"}`, and the speech is the fallback. An issue still blocking
+at the end gets `Unresolved…` or a weighted default, as before. An issue
+settled along the way gets `Resolved in round 2: a2 (Blair) conceded to a1
+(Avery) — session cookies.`, and K2 says so in the chat the round it happens.
+
+**The forced probe round** (CLAUDE.md anti-mush). If the first round finds no
+blocking differences but the two users' task lists differ, the next K2 call
+is told to look specifically for conflicts the plans paper over before
+anything counts as converged. With `STOP_ON_CONVERGE=1` this keeps the loop
+from ending on round 1. The probe is K2's alone (no advocate turn, nothing to
+answer), and if it also finds nothing, the negotiation ends there. With the
+default `STOP_ON_CONVERGE=0` the rounds run as usual, and round 2's K2 call
+carries the probe.
+
+**An unreadable K2 round is not agreement.** K2's retry now resends the
+same plans; it used to send only "Round N, reply with JSON". If both
+attempts fail, the round is marked `moderator_failed` and the last readable
+analysis is carried forward, with a `moderator_message` saying so. Before,
+such a round published zero differences: under `STOP_ON_CONVERGE` that
+ended the argument as "converged", and in the final round it erased every
+open issue from the plan. Advocates get one retry on a malformed reply too;
+before, one bad reply froze that side's plan for the round.
+
+**Approval records the decision.** The second approval's `context_updated`
+carries a decision record in the shape of
+`fixtures/events/context_updated.json`. Example: `Decided: d1 (auth
+mechanism): … a1 (Avery) owns src/session.py. Both sides write src/app.py, one
+ticket after the other.` That record is appended to the room's shared context,
+which every coder is handed. It used to carry the plan's one-line summary and
+change nothing the coders saw.
+
+## The stream (`events.py`)
+
+Every SSE frame carries an `id:`, which is the event's index in the room's
+history. When a connection drops, `EventSource` reconnects on its own and
+sends `Last-Event-ID`; the replay then resumes after that event. Before, every
+reconnect replayed from the top into a client that still held its state, so
+the reducer saw each event twice. A fresh `EventSource` sends no id and still
+gets everything, so `web/`'s explicit "reset" works as before. A quiet room
+sends a `: keep-alive` comment every `SSE_HEARTBEAT_SECONDS` (default 15) so
+proxies don't close the stream during a long model call. An event published
+mid-replay is now sent once, not twice.
 
 ## Room governance: the goal and influence weights
 
@@ -285,7 +335,9 @@ orchestrator/
   goal.py         the room's fixed north star + its per-stage anchor strength
   influence.py    per-user weights -> shares, advocate stance, deadlock tiebreak
   interjections.py  human messages/rejection notes -> K2 and advocate prompt sections
-  events.py       EventBus: per-room dict-event log + SSE fan-out + db.record_event hook
+  issues.py       every blocking issue across rounds, who moved, how it settled
+  events.py       EventBus: per-room event log + SSE fan-out with ids, resume,
+                   heartbeats + db.record_event hook
   rooms.py        Room / RoomStore (in-memory) + room_snapshot (-> db.save_room)
   schemas.py      FinalPlan/Ticket/Step/... — typed, for validator.py + ticketing.py
   workspace.py    seeded demo repo, mirrors web/lib/workspace.ts
@@ -312,7 +364,11 @@ orchestrator/
                            round; reject-with-notes -> resumed negotiation
     test_lifecycle.py     audit regressions: approval/negotiate guards, /context
                            auth, parallel drafts, project brief, file hand-over
-    scripted_room.py      shared recording fakes for the two files above
+    test_negotiation_outcomes.py  settled-issue resolutions, the probe round,
+                           unreadable K2 rounds, the approval's decision record
+    test_model_retries.py what K2's and the advocates' retries carry
+    test_stream.py        SSE ids, Last-Event-ID resume, heartbeats, no dupes
+    scripted_room.py      shared recording fakes for the loop tests
     test_governance.py    the goal's fade, the weight tiebreak table, admin-only
                            + frozen-after-start, and both wired through the app
     test_end_to_end.py    full room lifecycle through the real app, LLM

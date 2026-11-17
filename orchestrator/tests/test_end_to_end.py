@@ -79,7 +79,7 @@ def fake_draft_poa(
 
 def fake_analyze(
     *, context, tasks, poa1: dict, poa2: dict, round_index: int, transcript: str, goal_block: str = "",
-    interjections: str = "",
+    interjections: str = "", previous_differences=None, probe: bool = False,
 ) -> dict:
     by_path_a = {p: s for s in poa1["steps"] for p in s["files_touched"]}
     by_path_b = {p: s for s in poa2["steps"] for p in s["files_touched"]}

@@ -20,6 +20,7 @@ from enum import Enum
 from .goal import Goal
 from .influence import shares
 from .interjections import Interjection
+from .issues import IssueLedger
 from .schemas import FinalPlan, Participant, Task, Ticket
 from .workspace import seed_files
 
@@ -83,6 +84,11 @@ class Room:
     # a rejected plan) resumes from where the argument left off instead of
     # redrafting from scratch and relitigating everything already conceded.
     poas: dict[str, dict] = field(default_factory=dict)
+    # Every blocking issue raised so far and how each one ended (issues.py),
+    # plus the last readable K2 analysis — both survive into a re-negotiation
+    # so issue ids and settled history carry on instead of starting over.
+    issues: IssueLedger = field(default_factory=IssueLedger)
+    last_analysis: dict = field(default_factory=dict)
 
     # Negotiation output.
     plan: FinalPlan | None = None
