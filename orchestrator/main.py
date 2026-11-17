@@ -41,14 +41,14 @@ from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import db
 from .agents import draft_poa, revise_poa
-from .events import EventBus, utc_now
+from .events import EventBus, parse_last_event_id, utc_now
 from .execution import agent_implementer, execute_room
 from .goal import Goal, anchor_strength, goal_block
 from .influence import DEFAULT_WEIGHT, MAX_WEIGHT, stance_block, weigh_deadlock
@@ -332,10 +332,16 @@ async def post_message(room_id: str, body: MessageIn) -> dict:
 
 
 @app.get("/rooms/{room_id}/stream")
-async def stream(room_id: str) -> StreamingResponse:
+async def stream(
+    room_id: str,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    """Replays the room's history, then streams live. EventSource sends
+    Last-Event-ID by itself when it reconnects after a drop; the replay
+    then resumes after that event instead of from the top (events.py)."""
     _get_room(room_id)
     return StreamingResponse(
-        bus.stream(room_id),
+        bus.stream(room_id, parse_last_event_id(last_event_id)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
