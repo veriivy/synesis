@@ -40,6 +40,7 @@ Return JSON only, no markdown:
 {{
   "content": "short speech: named move per blocking issue_id (under 200 words)",
   "addresses_issues": ["d1", "d2"],
+  "moves": {{"d1": "HOLD", "d2": "COMPROMISE"}},
   "poa": {{
     "poa_id": "...",
     "agent_id": "{agent_id}",
@@ -56,6 +57,32 @@ Return JSON only, no markdown:
   }}
 }}
 """
+
+
+JSON_RETRY_NOTE = (
+    "\n\nYour previous reply was not valid JSON. Reply with the JSON object only — "
+    "no prose, no markdown."
+)
+
+
+def _chat_json(*, system: str, user: str, provider: str, api_key: str | None) -> dict:
+    """One advocate call, parsed. CLAUDE.md: "timeout, one retry, and a
+    JSON-repair fallback" — providers.chat owns the timeout and transport
+    retry, extract_object repairs truncation; this is the one retry for a
+    reply that still isn't JSON. Before it, a single malformed reply froze
+    that advocate's plan for the whole round."""
+    raw = chat(system=system, user=user, provider=provider, max_tokens=4096, api_key=api_key)
+    try:
+        return extract_object(raw)
+    except ValueError:
+        raw = chat(
+            system=system,
+            user=user + JSON_RETRY_NOTE,
+            provider=provider,
+            max_tokens=4096,
+            api_key=api_key,
+        )
+        return extract_object(raw)
 
 
 def _user_block(tasks: Any, user_id: str) -> tuple[str, str]:
@@ -183,23 +210,24 @@ def revise_poa(
         )
     )
     try:
-        raw = chat(
+        data = _chat_json(
             system=system,
             user=user,
             provider=provider or agent_provider(agent_id),
-            max_tokens=4096,
             api_key=api_key,
         )
-        data = extract_object(raw)
         content = str(data.get("content") or "").strip() or "(revised plan, no speech)"
         addressed = data.get("addresses_issues")
         if not isinstance(addressed, list):
             addressed = re.findall(r"\bd\d+\b", content)
         addressed = [str(x) for x in addressed]
+        # Untrusted like the rest; issues.moves_of validates each entry.
+        moves = data.get("moves") if isinstance(data.get("moves"), dict) else {}
         new_poa = _normalize_poa(data.get("poa"), poa, round_index)
     except Exception as exc:  # noqa: BLE001 — keep the last plan rather than abort
         content = f"[{agent_id} could not revise this round: {exc}]"
         addressed = []
+        moves = {}
         new_poa = dict(poa)
 
     return {
@@ -207,6 +235,7 @@ def revise_poa(
         "user_id": user_id,
         "content": content,
         "addresses_issues": addressed or issue_ids,
+        "moves": moves,
         "poa": new_poa,
     }
 
@@ -267,14 +296,12 @@ def draft_poa(
     )
     seed = {"poa_id": f"poa_{agent_id}", "agent_id": agent_id, "user_id": user_id}
     try:
-        raw = chat(
+        data = _chat_json(
             system=system,
             user=_project_section(project_context) + "Draft the opening PoA now.",
             provider=provider or agent_provider(agent_id),
-            max_tokens=4096,
             api_key=api_key,
         )
-        data = extract_object(raw)
         poa = _normalize_poa(data, seed, round_index=0)
     except Exception as exc:  # noqa: BLE001 — a room needs SOME opening PoA to negotiate over
         poa = {

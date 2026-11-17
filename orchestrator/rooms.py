@@ -20,6 +20,7 @@ from enum import Enum
 from .goal import Goal
 from .influence import shares
 from .interjections import Interjection
+from .issues import IssueLedger
 from .schemas import FinalPlan, Participant, Task, Ticket
 from .workspace import seed_files
 
@@ -46,6 +47,9 @@ class Room:
     phase: Phase = Phase.WAITING
     task: asyncio.Task | None = None  # the negotiate() background task
     execute_task: asyncio.Task | None = None  # the execute() background task
+    # A finished room loaded from disk (archive.py): its stream and files
+    # are served, every endpoint that would change it answers 409.
+    replay: bool = False
 
     # Task intake: POST /participants, /context, /tasks.
     participants: dict[str, Participant] = field(default_factory=dict)
@@ -83,6 +87,11 @@ class Room:
     # a rejected plan) resumes from where the argument left off instead of
     # redrafting from scratch and relitigating everything already conceded.
     poas: dict[str, dict] = field(default_factory=dict)
+    # Every blocking issue raised so far and how each one ended (issues.py),
+    # plus the last readable K2 analysis — both survive into a re-negotiation
+    # so issue ids and settled history carry on instead of starting over.
+    issues: IssueLedger = field(default_factory=IssueLedger)
+    last_analysis: dict = field(default_factory=dict)
 
     # Negotiation output.
     plan: FinalPlan | None = None
@@ -189,6 +198,10 @@ class RoomStore:
         room = Room(room_id=f"room_{uuid.uuid4().hex[:8]}")
         self._rooms[room.room_id] = room
         return room
+
+    def add(self, room: Room) -> None:
+        """Register a room built elsewhere (a replay, archive.replay_room)."""
+        self._rooms[room.room_id] = room
 
     def get(self, room_id: str) -> Room | None:
         return self._rooms.get(room_id)

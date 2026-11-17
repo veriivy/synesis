@@ -218,3 +218,49 @@ async def test_an_undecided_deadlock_leaves_both_sides_steps_in(client, script):
 
     assert sorted(room.step_owner.values()) == ["a1", "a2"]
     assert room.plan.resolutions[0].outcome.startswith("Unresolved")
+
+
+# --- execution runs once ------------------------------------------------------------
+
+
+async def _execute(client: AsyncClient, room_id: str):
+    r = await client.post(f"/rooms/{room_id}/execute")
+    room = main_module.rooms.get(room_id)
+    if r.status_code == 202:
+        await asyncio.wait_for(room.execute_task, timeout=5)
+    return r
+
+
+@pytest.mark.asyncio
+async def test_a_finished_execution_is_not_run_again(client, script, real_ticketing):
+    # web/lib/useLiveRoom.ts re-fires POST /execute when a reset replays
+    # tickets_created, trusting a 409 — which used to come only mid-run.
+    room_id, _, tokens = await setup_room(client)
+    await negotiate(client, room_id)
+    await _approve_both(client, room_id, tokens)
+    assert (await _execute(client, room_id)).status_code == 202
+    started = len(events(room_id, "ticket_started"))
+
+    again = await _execute(client, room_id)
+
+    assert again.status_code == 409 and "already finished" in again.json()["detail"]
+    assert len(events(room_id, "ticket_started")) == started
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_execution_may_be_retried(client, script, real_ticketing, monkeypatch):
+    room_id, _, tokens = await setup_room(client)
+    room = await negotiate(client, room_id)
+    await _approve_both(client, room_id, tokens)
+    real_execute_room = main_module.execute_room
+
+    async def crash(room, bus, implement):
+        raise RuntimeError("worker pool died")
+
+    monkeypatch.setattr(main_module, "execute_room", crash)
+    assert (await _execute(client, room_id)).status_code == 202
+    assert room.phase == main_module.Phase.FAILED
+
+    monkeypatch.setattr(main_module, "execute_room", real_execute_room)
+    assert (await _execute(client, room_id)).status_code == 202
+    assert room.phase == main_module.Phase.DONE
