@@ -47,6 +47,9 @@ class Room:
     phase: Phase = Phase.WAITING
     task: asyncio.Task | None = None  # the negotiate() background task
     execute_task: asyncio.Task | None = None  # the execute() background task
+    # A finished room loaded from disk (archive.py): its stream and files
+    # are served, every endpoint that would change it answers 409.
+    replay: bool = False
 
     # Task intake: POST /participants, /context, /tasks.
     participants: dict[str, Participant] = field(default_factory=dict)
@@ -195,6 +198,10 @@ class RoomStore:
         room = Room(room_id=f"room_{uuid.uuid4().hex[:8]}")
         self._rooms[room.room_id] = room
         return room
+
+    def add(self, room: Room) -> None:
+        """Register a room built elsewhere (a replay, archive.replay_room)."""
+        self._rooms[room.room_id] = room
 
     def get(self, room_id: str) -> Room | None:
         return self._rooms.get(room_id)

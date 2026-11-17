@@ -65,6 +65,12 @@ class EventBus:
         # it — db.record_event already swallows its own failures.
         asyncio.create_task(db.record_event(event))
 
+    def seed(self, room_id: str, events: list[dict]) -> None:
+        """Install a finished room's log as its history (archive.py). Not
+        published: nobody is subscribed yet, and the events were recorded
+        when they first happened."""
+        self._history[room_id] = list(events)
+
     def history(self, room_id: str) -> list[dict]:
         """The event log so far, in order. Used by tests that assert on
         what a room published without opening a real SSE connection."""

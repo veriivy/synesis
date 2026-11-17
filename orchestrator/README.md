@@ -141,6 +141,28 @@ sends a `: keep-alive` comment every `SSE_HEARTBEAT_SECONDS` (default 15) so
 proxies don't close the stream during a long model call. An event published
 mid-replay is now sent once, not twice.
 
+## The fallback room (`archive.py`)
+
+CLAUDE.md's latency section asks for "one pre-warmed completed room as a
+fallback". Set `ROOM_ARCHIVE_DIR` and every room whose execution finishes is
+written to `<dir>/<room_id>.json`, containing its whole event log and the files
+as they were written. Set `PREWARM_ROOMS` to a comma-separated list of those
+archives, or of `.jsonl` event logs like `fixtures/stream.jsonl`. At startup
+each one becomes a read-only replay room, and you open it in the live UI at
+`/live?room=<room_id>`. Its stream replays like any room's, and `GET /files`
+serves what was written. A `.jsonl` log has no file contents, so it serves the
+seeded workspace instead. Every endpoint that would change a replay room
+answers 409. That includes `POST /execute`, which the UI fires as soon as it
+sees `tickets_created`. A bad path is logged and skipped, so it never stops
+the server from starting.
+
+Rehearse once with `ROOM_ARCHIVE_DIR=archives`. Then restart with
+`PREWARM_ROOMS=archives/<room_id>.json` (or `fixtures/stream.jsonl` for a
+fallback with no rehearsal at all). If the live models stall mid-pitch, the
+replay is one URL away. `archives/` isn't in the root `.gitignore`. Either
+point `ROOM_ARCHIVE_DIR` outside the repo, or commit only the one rehearsal
+you want deployed.
+
 ## Room governance: the goal and influence weights
 
 Both are optional, both are set by whoever created the room (the
@@ -210,7 +232,13 @@ A message sent mid-round lands in the next round rather than vanishing. A
 batch K2 reads in the final round (when no advocate turn follows) is put
 back on the queue. Only joined participants are queued: an unverified
 `user_id` still shows in the chat but steers nothing, and the response's
-`queued` says which happened. Messages are capped at 4000 chars.
+`queued` says which happened. Messages are capped at 4000 chars, and a
+round's whole batch at 8000 (`MAX_BATCH_CHARS`), split evenly between the
+people who spoke. Each speaker keeps their rejection notes first, then their
+newest messages, and the prompt says how many were left out. Without the cap,
+a burst of messages could overflow K2's context and leave every analysis
+unreadable, and one person's flood could bury the other's single
+instruction.
 
 **Rejecting with a reason.** `approved: false` with `notes` publishes the
 notes as that user's `user_message` and queues them. A second
@@ -225,6 +253,10 @@ redrafting: it emits a `moderator_message`, round numbers keep counting
 - Only users listed on the plan may vote.
 - A repeat approval is a 409, not a second decomposition. If ticketing
   failed, approving again retries it.
+- Execution runs once. `web/` fires `POST /execute` whenever it sees
+  `tickets_created`, and its "reset" replays that event, trusting a 409. The
+  409 used to come only mid-run, so a reset after a finished run re-billed
+  and rewrote every ticket. Only a run that crashed may go again.
 
 ## What's real vs. a deliberate stand-in
 
@@ -336,6 +368,7 @@ orchestrator/
   influence.py    per-user weights -> shares, advocate stance, deadlock tiebreak
   interjections.py  human messages/rejection notes -> K2 and advocate prompt sections
   issues.py       every blocking issue across rounds, who moved, how it settled
+  archive.py      finished rooms -> disk, and back as read-only fallback replays
   events.py       EventBus: per-room event log + SSE fan-out with ids, resume,
                    heartbeats + db.record_event hook
   rooms.py        Room / RoomStore (in-memory) + room_snapshot (-> db.save_room)
@@ -368,6 +401,7 @@ orchestrator/
                            unreadable K2 rounds, the approval's decision record
     test_model_retries.py what K2's and the advocates' retries carry
     test_stream.py        SSE ids, Last-Event-ID resume, heartbeats, no dupes
+    test_archive.py       archive round trip, bad archives, read-only replays
     scripted_room.py      shared recording fakes for the loop tests
     test_governance.py    the goal's fade, the weight tiebreak table, admin-only
                            + frozen-after-start, and both wired through the app

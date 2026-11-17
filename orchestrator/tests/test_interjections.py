@@ -17,7 +17,7 @@ from httpx import AsyncClient
 
 import orchestrator.main as main_module
 from orchestrator.agents import ADVOCATE_SYSTEM
-from orchestrator.interjections import Interjection, for_advocate, for_moderator
+from orchestrator.interjections import MAX_BATCH_CHARS, Interjection, budgeted, for_advocate, for_moderator
 from orchestrator.tests.scripted_room import (  # noqa: F401 — fixtures
     ScriptedRoom,
     client,
@@ -212,3 +212,42 @@ async def test_a_rejection_without_notes_queues_nothing(client: AsyncClient, scr
     )
 
     assert room.pending_messages == []
+
+
+# --- the per-round budget -----------------------------------------------------------------
+
+
+def _msg(user_id: str, name: str, n: int, size: int = 1000, source="message") -> Interjection:
+    return Interjection(user_id=user_id, display_name=name, content=f"#{n} " + "x" * size, source=source)
+
+
+def test_a_small_batch_is_untouched():
+    batch = [_msg("u1", "Avery", 1), _msg("u2", "Blair", 2)]
+
+    assert budgeted(batch) == (batch, 0)
+
+
+def test_one_persons_flood_cannot_bury_the_others_instruction():
+    flood = [_msg("u2", "Blair", n) for n in range(1, 21)]  # 20k chars
+    batch = flood[:10] + [_msg("u1", "Avery", 99, size=200)] + flood[10:]
+
+    kept, omitted = budgeted(batch)
+
+    assert any(i.content.startswith("#99 ") for i in kept), "Avery's one message survives"
+    assert sum(len(i.content) for i in kept) <= MAX_BATCH_CHARS
+    assert [i.content.split()[0] for i in kept if i.user_id == "u2"] == ["#18", "#19", "#20"], (
+        "Blair's newest messages fill their half; order is kept"
+    )
+    assert omitted == 17
+    assert "(17 earlier interjection(s) left out for length.)" in for_moderator(batch)
+    assert "(17 earlier interjection(s) left out for length.)" in for_advocate(batch, my_user_id="u1")
+
+
+def test_a_rejection_note_outlasts_newer_chatter():
+    batch = [_msg("u2", "Blair", 0, size=3000, source="rejection")] + [
+        _msg("u2", "Blair", n, size=3000) for n in range(1, 6)
+    ]
+
+    kept, _ = budgeted(batch)
+
+    assert kept[0].source == "rejection"

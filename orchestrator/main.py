@@ -46,7 +46,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db
+from . import archive, db
 from .agents import draft_poa, revise_poa
 from .events import EventBus, parse_last_event_id, utc_now
 from .execution import agent_implementer, execute_room
@@ -84,13 +84,32 @@ bus = EventBus()
 rooms = RoomStore()
 
 
+def prewarm(paths: list[Path]) -> list[str]:
+    """Load each archive as a read-only replay room (archive.py). A bad
+    path is logged and skipped — a missing fallback must not stop the live
+    server from starting."""
+    loaded = []
+    for path in paths:
+        try:
+            room, events = archive.replay_room(path)
+        except (OSError, ValueError) as exc:
+            log.warning("PREWARM_ROOMS: skipping %s (%s)", path, exc)
+            continue
+        rooms.add(room)
+        bus.seed(room.room_id, events)
+        loaded.append(room.room_id)
+    return loaded
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    replays = prewarm(archive.prewarm_paths())
     log.info(
-        "orchestrator up — max_rounds=%s stop_on_converge=%s providers=%s",
+        "orchestrator up — max_rounds=%s stop_on_converge=%s providers=%s replays=%s",
         MAX_ROUNDS,
         STOP_ON_CONVERGE,
         provider_status(),
+        replays,
     )
     yield
 
@@ -114,6 +133,17 @@ def _get_room(room_id: str) -> Room:
     room = rooms.get(room_id)
     if room is None:
         raise HTTPException(404, f"no such room: {room_id}")
+    return room
+
+
+def _get_writable_room(room_id: str) -> Room:
+    """_get_room for every endpoint that changes a room. A replay
+    (archive.py) is a finished room on display: joining it, negotiating
+    in it, or — the one web/ would actually fire, on seeing its
+    tickets_created — executing it again is refused."""
+    room = _get_room(room_id)
+    if room.replay:
+        raise HTTPException(409, f"{room_id} is a read-only replay of a finished room")
     return room
 
 
@@ -181,7 +211,7 @@ class GoalIn(Goal):
 async def set_goal(room_id: str, body: GoalIn) -> dict:
     """The room's north star (goal.py). Re-settable during setup so a typo
     isn't permanent; frozen the moment negotiation starts."""
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_admin(room, body.admin_token)
     _check_unlocked(room, "the goal")
     room.goal = Goal(statement=body.statement, success_criteria=body.success_criteria)
@@ -201,7 +231,7 @@ class WeightsIn(BaseModel):
 async def set_weights(room_id: str, body: WeightsIn) -> dict:
     """Merge user_id -> weight into the room (influence.py). A user_id
     may be weighted before it joins. Frozen once negotiation starts."""
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_admin(room, body.admin_token)
     _check_unlocked(room, "influence weighting")
     room.weights.update(body.weights)
@@ -228,7 +258,7 @@ class ParticipantIn(BaseModel):
 
 @app.post("/rooms/{room_id}/participants", status_code=201)
 async def add_participant(room_id: str, body: ParticipantIn) -> dict:
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_owner(room, body.user_id, body.participant_token)
     token = room.participant_tokens.setdefault(body.user_id, secrets.token_urlsafe(32))
 
@@ -264,7 +294,7 @@ async def set_context(room_id: str, body: ContextIn) -> dict:
     every advocate's, K2's and every coder's prompt, so it used to be an
     open prompt-injection point for anyone holding a room_id — at any time,
     mid-execution included. Admin-only, fixed once negotiation starts."""
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_admin(room, body.admin_token)
     _check_unlocked(room, "the shared context")
     room.context_version += 1
@@ -289,7 +319,7 @@ class TasksIn(BaseModel):
 
 @app.post("/rooms/{room_id}/tasks")
 async def set_tasks(room_id: str, body: TasksIn) -> dict:
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_owner(room, body.user_id, body.participant_token)
     room.tasks_by_user[body.user_id] = body.tasks
     return {"ok": True}
@@ -308,7 +338,7 @@ async def post_message(room_id: str, body: MessageIn) -> dict:
     who joined the room. _check_owner lets an unclaimed user_id through
     (the token-free fixture demo path); that's tolerable for a chat line,
     not for steering two agents, so `queued` says which one happened."""
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     _check_owner(room, body.user_id, body.participant_token)
     queued = body.user_id in room.participant_tokens and bool(body.content.strip())
     if queued:
@@ -354,7 +384,7 @@ async def stream(
 
 @app.post("/rooms/{room_id}/negotiate", status_code=202)
 async def negotiate(room_id: str) -> dict:
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     if room.task is not None and not room.task.done():
         raise HTTPException(409, "negotiation already running")
     # Re-negotiating after a REJECTED plan is the point (it resumes from the
@@ -379,7 +409,7 @@ class ApprovalIn(BaseModel):
 
 @app.post("/rooms/{room_id}/plan/approve")
 async def approve_plan(room_id: str, body: ApprovalIn) -> dict:
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     if room.plan is None:
         raise HTTPException(409, "no plan proposed yet")
     if room.task is not None and not room.task.done():
@@ -525,13 +555,20 @@ async def _queue_rejection(room: Room, user_id: str, notes: str) -> None:
 
 @app.post("/rooms/{room_id}/execute", status_code=202)
 async def execute(room_id: str) -> dict:
-    room = _get_room(room_id)
+    room = _get_writable_room(room_id)
     if room.plan is None or room.plan.status != "approved":
         raise HTTPException(409, "plan is not approved")
     if not room.tickets:
         raise HTTPException(409, "no tickets to execute")
     if room.execute_task is not None and not room.execute_task.done():
         raise HTTPException(409, "execution already running")
+    if room.execute_task is not None and room.phase != Phase.FAILED:
+        # web/lib/useLiveRoom.ts fires POST /execute whenever it sees
+        # tickets_created, and its "reset" replays the backlog — trusting
+        # this endpoint to 409 a repeat. It only refused one while running,
+        # so a reset after a finished run re-billed and rewrote every
+        # ticket. Only a run that crashed (phase FAILED) may go again.
+        raise HTTPException(409, "execution already finished")
 
     room.phase = Phase.EXECUTING
 
@@ -551,6 +588,13 @@ async def execute(room_id: str) -> dict:
             await bus.publish(room_id, {"type": "error", "where": "execute", "detail": str(exc), "ts": utc_now()})
         finally:
             await db.save_room(room_snapshot(room))
+            if room.phase == Phase.DONE:
+                # With ROOM_ARCHIVE_DIR set, a finished rehearsal becomes the
+                # next PREWARM_ROOMS fallback (archive.py).
+                try:
+                    await asyncio.to_thread(archive.save, room, bus.history(room_id))
+                except Exception:  # noqa: BLE001 — a full disk must not fail a finished room
+                    log.warning("archiving %s failed", room_id, exc_info=True)
 
     room.execute_task = asyncio.create_task(_run())
     return {"ok": True}
